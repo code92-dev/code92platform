@@ -186,7 +186,7 @@ async function fireSchedules(admin: any) {
 
     const { data: agents } = await admin.database
       .from('agents')
-      .select('user_id, model, runtime, enabled')
+      .select('user_id, model, enabled')
       .eq('user_id', s.agent_id)
       .limit(1);
 
@@ -202,9 +202,7 @@ async function fireSchedules(admin: any) {
         schedule_id: s.id,
         channel_id: s.channel_id,
         model: agent.model,
-        runtime: agent.runtime,
         status: 'pending',
-        execution_phase: 'queued',
       },
     ]);
 

@@ -8,14 +8,11 @@ import {createInsForgeServerClient} from '@/lib/insforge/server';
 import {
   MODEL_SLUG_PATTERN,
   PROPOSAL_ACTIONS,
-  AGENT_RUNTIMES,
-  TOOL_PROFILES,
   type Agent,
   type AgentProposal,
   type AgentRun,
   type AgentSchedule,
-  type OpenRouterStatus,
-  type AiGatewayStatus
+  type OpenRouterStatus
 } from '@/lib/agents';
 
 export type AgentActionResult = {ok: true} | {ok: false; error: string};
@@ -110,7 +107,7 @@ function mapDatabaseError(error: unknown): string {
 }
 
 const AGENT_COLUMNS =
-  'user_id, handle, display_name, description, system_prompt, model, allowed_actions, temperature, max_output_tokens, runtime, tool_profile, max_tool_steps, max_run_seconds, enabled, budget_usd_month, created_at';
+  'user_id, handle, display_name, description, system_prompt, model, allowed_actions, temperature, max_output_tokens, enabled, budget_usd_month, created_at';
 
 export async function getAgentsAction(): Promise<Agent[]> {
   const caller = await requireActiveCaller();
@@ -245,83 +242,6 @@ export async function clearOpenRouterKeyAction(): Promise<AgentActionResult> {
 }
 
 // ============================================================
-// The Vercel AI Gateway credential
-// ============================================================
-// This is the access key fx uses to reach Vercel. A provider's own BYOK key
-// remains configured in the Vercel team; the app only stores this gateway key
-// encrypted and reveals it once to the isolated runner for a claimed run.
-
-export async function getAiGatewayStatusAction(): Promise<AiGatewayStatus | null> {
-  const caller = await requireAdmin();
-  if (!caller) return null;
-
-  const insforge = await createInsForgeServerClient();
-  const {data, error} = await insforge.database.rpc('ai_gateway_connection_status');
-  if (error) return null;
-  const row = (Array.isArray(data) ? data[0] : data) as AiGatewayStatus | undefined;
-  return row ?? null;
-}
-
-const aiGatewayKeySchema = z.object({
-  apiKey: z.string().trim().min(20).max(500)
-});
-
-export type SaveAiGatewayKeyResult =
-  | {ok: true; lastFour: string}
-  | {ok: false; error: string};
-
-export async function saveAiGatewayKeyAction(
-  input: z.infer<typeof aiGatewayKeySchema>
-): Promise<SaveAiGatewayKeyResult> {
-  const caller = await requireAdmin();
-  if (!caller) return {ok: false, error: 'forbidden'};
-  const parsed = aiGatewayKeySchema.safeParse(input);
-  if (!parsed.success) return {ok: false, error: 'invalid'};
-
-  const insforge = await createInsForgeServerClient();
-  const {data, error} = await insforge.functions.invoke('thread-agent', {
-    method: 'POST',
-    body: {action: 'save_ai_gateway_key', api_key: parsed.data.apiKey}
-  });
-  const failure = extractError(data, error);
-  if (failure) return {ok: false, error: failure};
-
-  const body = (data ?? {}) as {last_four?: string};
-  revalidatePath('/settings');
-  return {ok: true, lastFour: body.last_four ?? '····'};
-}
-
-export async function testAiGatewayKeyAction(): Promise<AgentActionResult> {
-  const caller = await requireAdmin();
-  if (!caller) return {ok: false, error: 'forbidden'};
-
-  const insforge = await createInsForgeServerClient();
-  const {data, error} = await insforge.functions.invoke('thread-agent', {
-    method: 'POST',
-    body: {action: 'test_ai_gateway_key'}
-  });
-  const failure = extractError(data, error);
-  if (failure) return {ok: false, error: failure};
-  revalidatePath('/settings');
-  return {ok: true};
-}
-
-export async function clearAiGatewayKeyAction(): Promise<AgentActionResult> {
-  const caller = await requireAdmin();
-  if (!caller) return {ok: false, error: 'forbidden'};
-
-  const insforge = await createInsForgeServerClient();
-  const {data, error} = await insforge.functions.invoke('thread-agent', {
-    method: 'POST',
-    body: {action: 'clear_ai_gateway_key'}
-  });
-  const failure = extractError(data, error);
-  if (failure) return {ok: false, error: failure};
-  revalidatePath('/settings');
-  return {ok: true};
-}
-
-// ============================================================
 // Agent lifecycle
 // ============================================================
 
@@ -341,10 +261,6 @@ const createAgentSchema = z.object({
   allowedActions: z.array(z.enum(PROPOSAL_ACTIONS)).max(PROPOSAL_ACTIONS.length),
   temperature: z.number().min(0).max(2).optional(),
   maxOutputTokens: z.number().int().min(256).max(32000).optional(),
-  runtime: z.enum(AGENT_RUNTIMES).optional(),
-  toolProfile: z.enum(TOOL_PROFILES).optional(),
-  maxToolSteps: z.number().int().min(0).max(100).optional(),
-  maxRunSeconds: z.number().int().min(30).max(1800).optional(),
   budgetUsdMonth: z.number().min(0).max(1000).optional()
 });
 
@@ -372,10 +288,6 @@ export async function createAgentAction(
       allowed_actions: parsed.data.allowedActions,
       temperature: parsed.data.temperature ?? 0.3,
       max_output_tokens: parsed.data.maxOutputTokens ?? 1500,
-      runtime: parsed.data.runtime ?? 'direct_openrouter',
-      tool_profile: parsed.data.toolProfile ?? 'chat',
-      max_tool_steps: parsed.data.maxToolSteps ?? 12,
-      max_run_seconds: parsed.data.maxRunSeconds ?? 240,
       budget_usd_month: parsed.data.budgetUsdMonth ?? 5
     }
   });
@@ -397,10 +309,6 @@ const updateAgentSchema = z.object({
   allowedActions: z.array(z.enum(PROPOSAL_ACTIONS)).optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxOutputTokens: z.number().int().min(256).max(32000).optional(),
-  runtime: z.enum(AGENT_RUNTIMES).optional(),
-  toolProfile: z.enum(TOOL_PROFILES).optional(),
-  maxToolSteps: z.number().int().min(0).max(100).optional(),
-  maxRunSeconds: z.number().int().min(30).max(1800).optional(),
   budgetUsdMonth: z.number().min(0).max(1000).optional(),
   enabled: z.boolean().optional()
 });
@@ -426,10 +334,6 @@ export async function updateAgentAction(
   if (rest.allowedActions !== undefined) patch.allowed_actions = rest.allowedActions;
   if (rest.temperature !== undefined) patch.temperature = rest.temperature;
   if (rest.maxOutputTokens !== undefined) patch.max_output_tokens = rest.maxOutputTokens;
-  if (rest.runtime !== undefined) patch.runtime = rest.runtime;
-  if (rest.toolProfile !== undefined) patch.tool_profile = rest.toolProfile;
-  if (rest.maxToolSteps !== undefined) patch.max_tool_steps = rest.maxToolSteps;
-  if (rest.maxRunSeconds !== undefined) patch.max_run_seconds = rest.maxRunSeconds;
   if (rest.budgetUsdMonth !== undefined) patch.budget_usd_month = rest.budgetUsdMonth;
   if (rest.enabled !== undefined) patch.enabled = rest.enabled;
 
@@ -651,7 +555,7 @@ export async function getAgentRunsAction(limit = 50): Promise<AgentRun[]> {
   const {data} = await insforge.database
     .from('agent_runs')
     .select(
-      'id, agent_id, trigger_message_id, schedule_id, model, status, runtime, execution_phase, prompt_tokens, completion_tokens, cost_usd, error, created_at'
+      'id, agent_id, trigger_message_id, schedule_id, model, status, prompt_tokens, completion_tokens, cost_usd, error, created_at'
     )
     .order('created_at', {ascending: false})
     .limit(limit);

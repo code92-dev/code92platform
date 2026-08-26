@@ -9,8 +9,6 @@
     "enabled": "Active",
     "disabled": "Paused",
     "budget": "Budget",
-    "runtime": "Runtime",
-    "steps": "steps",
     "spent": "{spent} of {budget} this month",
     "prompt": "Instructions",
     "edit": "Edit",
@@ -26,24 +24,7 @@
     "description": "What it is for",
     "model": "OpenRouter model",
     "modelHint": "Paste the model name exactly as it appears on openrouter.ai/models — for example anthropic/claude-sonnet-4.5 or perplexity/sonar.",
-    "modelFx": "AI Gateway model",
-    "modelFxHint": "Use a Vercel AI Gateway model ID in provider/model form. The native fx runner cannot use this workspace's OpenRouter key.",
-    "modelInvalid": "That does not look like a provider/model model name.",
-    "runtime": "Execution runtime",
-    "runtimeHint": {
-      "direct_openrouter": "Uses the built-in, direct OpenRouter path. This is the compatibility default.",
-      "fx": "Uses the native fx compute runner with web search, scoped platform tools, and durable sessions. It needs a configured runner."
-    },
-    "toolProfile": "Tool profile",
-    "toolProfileHint": {
-      "chat": "Conversation-first. Tools are available only when clearly useful.",
-      "research": "Optimized for sourced web research and read-only platform context.",
-      "operator": "For longer investigations and background work; platform writes still require a human approval."
-    },
-    "maxToolSteps": "Maximum tool steps",
-    "maxToolStepsHint": "0–100. Caps the native agent loop for each run.",
-    "maxRunSeconds": "Run time limit (seconds)",
-    "maxRunSecondsHint": "30–1800. A lease heartbeat keeps a valid long-running run alive.",
+    "modelInvalid": "That does not look like an OpenRouter model name. They are written vendor/model.",
     "systemPrompt": "Instructions",
     "systemPromptHint": "What this agent is for and how it should behave. The whole team can read this.",
     "allowedActions": "What it may propose",
@@ -53,15 +34,6 @@
     "cancel": "Cancel",
     "save": "Save changes",
     "handleLocked": "The handle cannot change — messages already address this agent by it."
-  },
-  "runtime": {
-    "direct_openrouter": "Direct OpenRouter",
-    "fx": "Native fx harness"
-  },
-  "toolProfile": {
-    "chat": "Chat",
-    "research": "Research",
-    "operator": "Operator"
   },
   "actions": {
     "knowledge_note": "Knowledge notes",
@@ -107,20 +79,6 @@
     "lastChecked": "Checked {when}",
     "checkFailed": "Last check failed: {error}"
   },
-  "aiGateway": {
-    "title": "Vercel AI Gateway",
-    "subtitle": "The native fx harness uses this Gateway access key. Configure your provider's own key in Vercel BYOK.",
-    "notConfigured": "No Vercel AI Gateway key is saved. Native fx agents cannot run until one is.",
-    "configured": "Gateway key ending {lastFour}",
-    "apiKey": "Gateway API key",
-    "apiKeyHint": "Create it in Vercel AI Gateway → API Keys. It is encrypted before storage, never returned to the browser, and supplied only to a claimed harness run.",
-    "byokLink": "Configure a provider key in Vercel BYOK",
-    "save": "Save Gateway key",
-    "saving": "Checking with Vercel…",
-    "test": "Test",
-    "clear": "Remove key",
-    "checkFailed": "Last check failed: {error}"
-  },
   "schedules": {
     "title": "Scheduled runs",
     "subtitle": "Admins only. A scheduled agent still proposes — it cannot change anything on its own.",
@@ -142,9 +100,7 @@
   },
   "runs": {
     "title": "Agent activity",
-    "subtitle": "Queue, tool-work, and completion state from both agent runtimes.",
     "empty": "No runs yet.",
-    "unknownAgent": "Archived agent",
     "model": "Model",
     "tokens": "Tokens",
     "cost": "Cost",
@@ -154,18 +110,6 @@
       "succeeded": "Done",
       "failed": "Failed",
       "skipped": "Skipped"
-    },
-    "phase": {
-      "queued": "queued",
-      "preparing": "preparing",
-      "researching": "researching",
-      "executing": "working",
-      "waiting": "waiting",
-      "finalizing": "finalizing",
-      "completed": "completed",
-      "failed": "failed",
-      "cancelled": "cancelled",
-      "skipped": "skipped"
     }
   },
   "errors": {

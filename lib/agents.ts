@@ -31,6 +31,26 @@ export const RUN_STATUSES = [
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+export const AGENT_RUNTIMES = ['direct_openrouter', 'fx'] as const;
+export type AgentRuntime = (typeof AGENT_RUNTIMES)[number];
+
+export const TOOL_PROFILES = ['chat', 'research', 'operator'] as const;
+export type ToolProfile = (typeof TOOL_PROFILES)[number];
+
+export const RUN_PHASES = [
+  'queued',
+  'preparing',
+  'researching',
+  'executing',
+  'waiting',
+  'finalizing',
+  'completed',
+  'failed',
+  'cancelled',
+  'skipped'
+] as const;
+export type RunPhase = (typeof RUN_PHASES)[number];
+
 // Which actions need an admin to approve them. The database is the authority —
 // decide_agent_proposal delegates to advance_lifecycle_phase, which re-derives
 // the approver's rights itself. This mirror exists so the card can disable the
@@ -62,6 +82,10 @@ export type Agent = {
   allowed_actions: ProposalAction[];
   temperature: number;
   max_output_tokens: number;
+  runtime: AgentRuntime;
+  tool_profile: ToolProfile;
+  max_tool_steps: number;
+  max_run_seconds: number;
   enabled: boolean;
   budget_usd_month: number;
   created_at: string;
@@ -108,6 +132,8 @@ export type AgentRun = {
   schedule_id: string | null;
   model: string | null;
   status: RunStatus;
+  runtime: AgentRuntime;
+  execution_phase: RunPhase;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost_usd: number | null;
@@ -132,6 +158,16 @@ export type OpenRouterStatus = {
   validation_error: string | null;
 };
 
+// What ai_gateway_connection_status() returns. The Vercel API key's ciphertext
+// and IV are deliberately absent from the RPC, so neither the browser nor a
+// future settings panel can accidentally receive the raw credential.
+export type AiGatewayStatus = {
+  is_configured: boolean;
+  key_last_four: string | null;
+  validated_at: string | null;
+  validation_error: string | null;
+};
+
 // Shape-only check of an OpenRouter model slug, matching the CHECK on
 // agents.model. Deliberately not a list of known models: that namespace belongs
 // to OpenRouter and changes without us, so an unknown slug should fail at call
@@ -147,4 +183,11 @@ export function isValidModelSlug(slug: string): boolean {
 // an obvious paste error does not become a round trip.
 export function looksLikeOpenRouterKey(key: string): boolean {
   return key.trim().startsWith('sk-or-');
+}
+
+// Vercel deliberately does not promise a stable visible prefix for all Gateway
+// key types, so do not reject a valid key based on a format guess. The edge
+// function validates it against the Gateway models endpoint before saving.
+export function looksLikeAiGatewayKey(key: string): boolean {
+  return key.trim().length >= 20 && key.trim().length <= 500;
 }

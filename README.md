@@ -23,6 +23,7 @@ open but an admin must activate the account before it reads anything.
 | **Implementation lifecycle** | Six phases (Ideation → Monitor) with risk-tiered gates and uploaded document evidence per phase. |
 | **Governance** | Portfolio-wide coverage, stuck products, the waiver register and the full gate log. |
 | **GitHub mirroring** | Each product links to one private repo in `code92-dev`; lifecycle evidence is committed into it. |
+| **Native agent harness** | Per-agent fx runtime for web research, long-running tool work, scoped platform context, and human-approved proposals. |
 
 Full behaviour is specified in **[SPECIFICATION.md](SPECIFICATION.md)**.
 
@@ -62,7 +63,8 @@ app/[locale]/      routes: /, /products, /tasks, /knowledge, /trends,
 components/        UI, grouped by feature (lifecycle/, governance/, products/, …)
 lib/               vocabulary + queries; lib/actions/* are Server Actions
 migrations/        every schema change, in order — the real data model
-functions/         Deno edge functions: trend-scan, github-sync
+functions/         Deno edge functions: trend-scan, github-sync, agent-runtime
+services/agent-runner/  Isolated native fx compute runner and MCP gateway
 messages/{en,ar}/  one JSON file per namespace, both locales required
 i18n/              routing, navigation helpers, namespace registry
 ```
@@ -118,6 +120,12 @@ feature set:
   advisor is unavailable on this project because `pg_stat_statements` is not
   installed. It reports "no issues" over an empty result set, which is not the
   same as passing.
+- **The native fx runner is intentionally inactive until an admin saves a
+  dedicated Vercel AI Gateway key in Settings.** Its data model and edge
+  control plane are deployed, but no existing agent is switched from the direct
+  OpenRouter runtime. Provider keys remain in Vercel's BYOK settings; follow
+  [`services/agent-runner/README.md`](services/agent-runner/README.md) to make
+  the final, spend-limited activation.
 
 See the Outstanding section of [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 for the full list.

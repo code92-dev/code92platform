@@ -35,6 +35,7 @@ const PIPELINE_ENABLED = true;
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
+const AI_GATEWAY_MODELS_URL = 'https://ai-gateway.vercel.sh/v1/models';
 const OPENROUTER_TIMEOUT_MS = 45000;
 
 // How much conversation the agent sees. Enough to follow a discussion, bounded so
@@ -166,6 +167,37 @@ async function decryptSecret(ciphertext: string, iv: string): Promise<string> {
   return new TextDecoder().decode(decrypted);
 }
 
+// The native fx runner needs a Vercel AI Gateway *access* key. Provider keys
+// for Vercel BYOK remain in Vercel; they never enter this application. Keeping
+// a distinct envelope key also means a future OpenRouter key rotation cannot
+// accidentally invalidate the harness connection.
+async function aiGatewayAesKey(): Promise<CryptoKey> {
+  const raw = Deno.env.get('AI_GATEWAY_CONNECTION_SECRET');
+  if (!raw) {
+    throw new ActionError('not_configured', 'AI_GATEWAY_CONNECTION_SECRET secret is not set', 500);
+  }
+  const bytes = base64ToBytes(raw);
+  if (bytes.length !== 32) {
+    throw new ActionError(
+      'not_configured',
+      'AI_GATEWAY_CONNECTION_SECRET must be 32 bytes, base64-encoded',
+      500,
+    );
+  }
+  return await crypto.subtle.importKey('raw', bytes, {name: 'AES-GCM'}, false, ['encrypt', 'decrypt']);
+}
+
+async function encryptAiGatewaySecret(plain: string): Promise<{ciphertext: string; iv: string}> {
+  const key = await aiGatewayAesKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    {name: 'AES-GCM', iv},
+    key,
+    new TextEncoder().encode(plain),
+  );
+  return {ciphertext: bytesToBase64(new Uint8Array(encrypted)), iv: bytesToBase64(iv)};
+}
+
 async function loadOpenRouterKey(admin: any): Promise<string> {
   const { data, error } = await admin.database
     .from('openrouter_connection')
@@ -226,6 +258,31 @@ async function fetchKeyInfo(apiKey: string): Promise<KeyInfo> {
       throw new ActionError('generic', 'OpenRouter key check timed out', 504);
     }
     throw new ActionError('generic', `OpenRouter key check failed: ${(e as Error).message}`, 502);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyAiGatewayKey(apiKey: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(AI_GATEWAY_MODELS_URL, {
+      headers: {Authorization: `Bearer ${apiKey}`},
+      signal: controller.signal,
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new ActionError('invalid', 'Vercel AI Gateway rejected this key');
+    }
+    if (!response.ok) {
+      throw new ActionError('generic', `Vercel AI Gateway key check failed (${response.status})`, 502);
+    }
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    if ((error as Error).name === 'AbortError') {
+      throw new ActionError('generic', 'Vercel AI Gateway key check timed out', 504);
+    }
+    throw new ActionError('generic', `Vercel AI Gateway key check failed: ${(error as Error).message}`, 502);
   } finally {
     clearTimeout(timer);
   }
@@ -695,15 +752,56 @@ async function finishRun(admin: any, runId: string, patch: Record<string, unknow
     .eq('id', runId);
 }
 
+// Native fx execution is delegated to an isolated compute service. The edge
+// function keeps its existing queue-drain role but never passes its admin API
+// key, OpenRouter credential, or caller JWT to that process.
+async function dispatchFxRun(runId: string): Promise<Record<string, unknown>> {
+  const runnerUrl = Deno.env.get('AGENT_RUNNER_URL')?.replace(/\/$/, '');
+  const runnerSecret = Deno.env.get('AGENT_RUNNER_SECRET');
+  if (!runnerUrl || !runnerSecret) {
+    throw new ActionError('not_configured', 'fx runner is not configured', 503);
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${runnerUrl}/dispatch`, {
+      method: 'POST',
+      headers: {Authorization: `Bearer ${runnerSecret}`, 'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId}),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 429) return {run_id: runId, status: 'pending', queued: true};
+    if (!response.ok) {
+      throw new ActionError('unreachable', String(body?.error ?? `fx runner returned ${response.status}`), 503);
+    }
+    return {run_id: runId, status: 'dispatched', queued: Boolean(body?.accepted)};
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    throw new ActionError('unreachable', 'fx runner is not reachable', 503);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function executeRun(admin: any, runId: string): Promise<Record<string, unknown>> {
   const { data: runs } = await admin.database
     .from('agent_runs')
-    .select('id, agent_id, trigger_message_id, schedule_id, channel_id, status')
+    .select('id, agent_id, trigger_message_id, schedule_id, channel_id, status, runtime')
     .eq('id', runId)
     .limit(1);
 
   const run = runs?.[0];
   if (!run) throw new ActionError('invalid', 'run not found');
+
+  if (run.runtime === 'fx') {
+    if (!PIPELINE_ENABLED) {
+      await finishRun(admin, runId, {status: 'skipped', execution_phase: 'skipped', error: 'pipeline disabled'});
+      return {run_id: runId, status: 'skipped'};
+    }
+    if (run.status !== 'pending') return {run_id: runId, status: run.status, claimed: false};
+    return await dispatchFxRun(runId);
+  }
 
   // Claim it. A run already past 'pending' has been picked up by another
   // invocation — the ping and the tick race by design, and this is where the
@@ -1005,6 +1103,84 @@ async function actionClearKey(admin: any, caller: Caller) {
   return { cleared: true };
 }
 
+// The key entered here authenticates the runner to Vercel AI Gateway. It is
+// not an OpenAI, Anthropic, or other provider key: those belong in Vercel's
+// BYOK settings, where Vercel can apply them without exposing them to Code92.
+async function actionSaveAiGatewayKey(admin: any, caller: Caller, body: any) {
+  requireAdmin(caller);
+  const apiKey = typeof body?.api_key === 'string' ? body.api_key.trim() : '';
+  if (apiKey.length < 20 || apiKey.length > 500) {
+    throw new ActionError('invalid', 'a Vercel AI Gateway API key is required');
+  }
+
+  await verifyAiGatewayKey(apiKey);
+  const encrypted = await encryptAiGatewaySecret(apiKey);
+  const {error} = await admin.database
+    .from('ai_gateway_connection')
+    .update({
+      key_ciphertext: encrypted.ciphertext,
+      key_iv: encrypted.iv,
+      key_last_four: apiKey.slice(-4),
+      validated_at: new Date().toISOString(),
+      validation_error: null,
+      connected_by: caller.userId || null,
+    })
+    .eq('id', true);
+  if (error) throw new ActionError('generic', `could not save AI Gateway key: ${error.message}`, 500);
+  return {saved: true, last_four: apiKey.slice(-4)};
+}
+
+async function actionTestAiGatewayKey(admin: any, caller: Caller) {
+  requireAdmin(caller);
+  const {data, error} = await admin.database
+    .from('ai_gateway_connection')
+    .select('key_ciphertext, key_iv')
+    .eq('id', true)
+    .limit(1);
+  if (error) throw new ActionError('generic', `AI Gateway credential lookup failed: ${error.message}`, 500);
+  const row = data?.[0];
+  if (!row?.key_ciphertext || !row?.key_iv) {
+    throw new ActionError('not_configured', 'no Vercel AI Gateway key has been saved yet', 400);
+  }
+  try {
+    const key = await aiGatewayAesKey();
+    const decrypted = await crypto.subtle.decrypt(
+      {name: 'AES-GCM', iv: base64ToBytes(row.key_iv)},
+      key,
+      base64ToBytes(row.key_ciphertext),
+    );
+    await verifyAiGatewayKey(new TextDecoder().decode(decrypted));
+    await admin.database
+      .from('ai_gateway_connection')
+      .update({validated_at: new Date().toISOString(), validation_error: null})
+      .eq('id', true);
+    return {ok: true};
+  } catch (error) {
+    const message = error instanceof ActionError ? error.message : (error as Error).message;
+    await admin.database
+      .from('ai_gateway_connection')
+      .update({validation_error: message.slice(0, 500), validated_at: new Date().toISOString()})
+      .eq('id', true);
+    throw error;
+  }
+}
+
+async function actionClearAiGatewayKey(admin: any, caller: Caller) {
+  requireAdmin(caller);
+  const {error} = await admin.database
+    .from('ai_gateway_connection')
+    .update({
+      key_ciphertext: null,
+      key_iv: null,
+      key_last_four: null,
+      validated_at: null,
+      validation_error: null,
+    })
+    .eq('id', true);
+  if (error) throw new ActionError('generic', `could not clear AI Gateway key: ${error.message}`, 500);
+  return {cleared: true};
+}
+
 async function actionRun(admin: any, body: any) {
   const runId = typeof body?.run_id === 'string' ? body.run_id : '';
   if (!runId) throw new ActionError('invalid', 'run_id is required');
@@ -1060,6 +1236,12 @@ async function actionProvisionAgent(admin: any, caller: Caller, body: any) {
   const model = String(body?.model ?? '').trim();
   const systemPrompt = String(body?.system_prompt ?? '').trim();
   const allowed: string[] = Array.isArray(body?.allowed_actions) ? body.allowed_actions : [];
+  const runtime = body?.runtime === 'fx' ? 'fx' : 'direct_openrouter';
+  const toolProfile = ['chat', 'research', 'operator'].includes(body?.tool_profile)
+    ? body.tool_profile
+    : 'chat';
+  const maxToolSteps = Number(body?.max_tool_steps ?? 12);
+  const maxRunSeconds = Number(body?.max_run_seconds ?? 240);
 
   if (!/^[a-z0-9][a-z0-9_-]{1,29}$/.test(handle)) {
     throw new ActionError('invalid', 'handle must be lowercase letters, digits, - or _');
@@ -1071,6 +1253,12 @@ async function actionProvisionAgent(admin: any, caller: Caller, body: any) {
       'invalid',
       'model must be an OpenRouter slug such as anthropic/claude-sonnet-4.5',
     );
+  }
+  if (!Number.isInteger(maxToolSteps) || maxToolSteps < 0 || maxToolSteps > 100) {
+    throw new ActionError('invalid', 'max_tool_steps must be between 0 and 100');
+  }
+  if (!Number.isInteger(maxRunSeconds) || maxRunSeconds < 30 || maxRunSeconds > 1800) {
+    throw new ActionError('invalid', 'max_run_seconds must be between 30 and 1800');
   }
   for (const a of allowed) {
     if (!(PROPOSAL_ACTIONS as readonly string[]).includes(a)) {
@@ -1142,6 +1330,10 @@ async function actionProvisionAgent(admin: any, caller: Caller, body: any) {
       allowed_actions: allowed,
       temperature: body?.temperature ?? 0.3,
       max_output_tokens: body?.max_output_tokens ?? 1500,
+      runtime,
+      tool_profile: toolProfile,
+      max_tool_steps: maxToolSteps,
+      max_run_seconds: maxRunSeconds,
       budget_usd_month: body?.budget_usd_month ?? 5,
       created_by: caller.userId || null,
     },
@@ -1187,6 +1379,12 @@ export default async function (req: Request): Promise<Response> {
         return jsonResponse(await actionTestKey(admin, caller));
       case 'clear_key':
         return jsonResponse(await actionClearKey(admin, caller));
+      case 'save_ai_gateway_key':
+        return jsonResponse(await actionSaveAiGatewayKey(admin, caller, body));
+      case 'test_ai_gateway_key':
+        return jsonResponse(await actionTestAiGatewayKey(admin, caller));
+      case 'clear_ai_gateway_key':
+        return jsonResponse(await actionClearAiGatewayKey(admin, caller));
       case 'provision_agent':
         return jsonResponse(await actionProvisionAgent(admin, caller, body));
       case 'run':

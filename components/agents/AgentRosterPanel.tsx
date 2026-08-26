@@ -10,10 +10,14 @@ import {
   updateAgentAction
 } from '@/lib/actions/agents';
 import {
+  AGENT_RUNTIMES,
   PROPOSAL_ACTIONS,
+  TOOL_PROFILES,
   isValidModelSlug,
+  type AgentRuntime,
   type Agent,
-  type ProposalAction
+  type ProposalAction,
+  type ToolProfile
 } from '@/lib/agents';
 
 // Provisioning and editing agents. Admin-only, enforced by RLS on public.agents
@@ -34,6 +38,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [allowed, setAllowed] = useState<ProposalAction[]>([]);
   const [budget, setBudget] = useState('5');
+  const [runtime, setRuntime] = useState<AgentRuntime>('direct_openrouter');
+  const [toolProfile, setToolProfile] = useState<ToolProfile>('chat');
+  const [maxToolSteps, setMaxToolSteps] = useState('12');
+  const [maxRunSeconds, setMaxRunSeconds] = useState('240');
 
   const editing = mode !== null && mode !== 'create';
 
@@ -45,6 +53,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
     setSystemPrompt('');
     setAllowed([]);
     setBudget('5');
+    setRuntime('direct_openrouter');
+    setToolProfile('chat');
+    setMaxToolSteps('12');
+    setMaxRunSeconds('240');
     setError(null);
   }
 
@@ -64,6 +76,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
     setSystemPrompt(agent.system_prompt);
     setAllowed([...agent.allowed_actions]);
     setBudget(String(agent.budget_usd_month ?? 5));
+    setRuntime(agent.runtime);
+    setToolProfile(agent.tool_profile);
+    setMaxToolSteps(String(agent.max_tool_steps));
+    setMaxRunSeconds(String(agent.max_run_seconds));
     setError(null);
     setMode(agent.user_id);
   }
@@ -100,6 +116,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
             systemPrompt: systemPrompt.trim(),
             model: model.trim(),
             allowedActions: allowed,
+            runtime,
+            toolProfile,
+            maxToolSteps: Number(maxToolSteps),
+            maxRunSeconds: Number(maxRunSeconds),
             budgetUsdMonth: Number(budget) || 5
           })
         : await createAgentAction({
@@ -109,6 +129,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
             systemPrompt: systemPrompt.trim(),
             model: model.trim(),
             allowedActions: allowed,
+            runtime,
+            toolProfile,
+            maxToolSteps: Number(maxToolSteps),
+            maxRunSeconds: Number(maxRunSeconds),
             budgetUsdMonth: Number(budget) || 5
           });
 
@@ -206,7 +230,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
           {/* Pasted verbatim from openrouter.ai/models. Deliberately a free text
               field rather than a select: OpenRouter adds models constantly, and a
               dropdown we maintain would be out of date the week after it ships. */}
-          <Field label={t('create.model')} hint={t('create.modelHint')}>
+          <Field
+            label={t(runtime === 'fx' ? 'create.modelFx' : 'create.model')}
+            hint={t(runtime === 'fx' ? 'create.modelFxHint' : 'create.modelHint')}
+          >
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
@@ -216,6 +243,54 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
               className="rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none"
             />
           </Field>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={t('create.runtime')} hint={t(`create.runtimeHint.${runtime}`)}>
+              <select
+                value={runtime}
+                onChange={(e) => setRuntime(e.target.value as AgentRuntime)}
+                className="rounded border border-hairline bg-bg px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+              >
+                {AGENT_RUNTIMES.map((item) => (
+                  <option key={item} value={item}>{t(`runtime.${item}`)}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label={t('create.toolProfile')} hint={t(`create.toolProfileHint.${toolProfile}`)}>
+              <select
+                value={toolProfile}
+                onChange={(e) => setToolProfile(e.target.value as ToolProfile)}
+                className="rounded border border-hairline bg-bg px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+              >
+                {TOOL_PROFILES.map((item) => (
+                  <option key={item} value={item}>{t(`toolProfile.${item}`)}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          {runtime === 'fx' ? (
+            <div className="grid gap-3 rounded border border-accent/20 bg-accent/[0.03] p-3 sm:grid-cols-2">
+              <Field label={t('create.maxToolSteps')} hint={t('create.maxToolStepsHint')}>
+                <input
+                  value={maxToolSteps}
+                  onChange={(e) => setMaxToolSteps(e.target.value)}
+                  dir="ltr"
+                  inputMode="numeric"
+                  className="w-32 rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink focus:border-accent focus:outline-none"
+                />
+              </Field>
+              <Field label={t('create.maxRunSeconds')} hint={t('create.maxRunSecondsHint')}>
+                <input
+                  value={maxRunSeconds}
+                  onChange={(e) => setMaxRunSeconds(e.target.value)}
+                  dir="ltr"
+                  inputMode="numeric"
+                  className="w-32 rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink focus:border-accent focus:outline-none"
+                />
+              </Field>
+            </div>
+          ) : null}
 
           <Field label={t('create.systemPrompt')} hint={t('create.systemPromptHint')}>
             <textarea
@@ -320,6 +395,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
                   ) : null}
                   <p className="mt-1.5 font-mono text-[11px] text-faint" dir="ltr">
                     {t('roster.model')}: {agent.model}
+                  </p>
+                  <p className="mt-1 font-mono text-[11px] text-faint">
+                    {t('roster.runtime')}: {t(`runtime.${agent.runtime}`)} · {t(`toolProfile.${agent.tool_profile}`)}
+                    {agent.runtime === 'fx' ? ` · ${agent.max_tool_steps} ${t('roster.steps')} · ${agent.max_run_seconds}s` : ''}
                   </p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {agent.allowed_actions.length === 0 ? (

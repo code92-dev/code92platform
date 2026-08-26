@@ -2,18 +2,22 @@ import {ShieldCheck} from 'lucide-react';
 import {getTranslations} from 'next-intl/server';
 
 import AgentRosterPanel from '@/components/agents/AgentRosterPanel';
+import AgentActivityPanel from '@/components/agents/AgentActivityPanel';
 import OpenRouterPanel from '@/components/agents/OpenRouterPanel';
+import VercelGatewayPanel from '@/components/agents/VercelGatewayPanel';
 import GithubSettingsPanel from '@/components/admin/GithubSettingsPanel';
 import MembersTable, {type MemberRow} from '@/components/admin/MembersTable';
 import NotificationPreferencesPanel from '@/components/settings/NotificationPreferencesPanel';
 import SettingsPreferences from '@/components/settings/SettingsPreferences';
 import {
   getAgentsAction,
-  getOpenRouterStatusAction
+  getAgentRunsAction,
+  getOpenRouterStatusAction,
+  getAiGatewayStatusAction
 } from '@/lib/actions/agents';
 import {getNotificationPreferencesAction} from '@/lib/actions/notifications';
 import {requireActiveMember} from '@/lib/auth';
-import type {Agent, OpenRouterStatus} from '@/lib/agents';
+import type {Agent, AgentRun, AiGatewayStatus, OpenRouterStatus} from '@/lib/agents';
 import type {GithubConnectionStatus} from '@/lib/github';
 import {createInsForgeServerClient} from '@/lib/insforge/server';
 
@@ -37,7 +41,9 @@ export default async function SettingsPage() {
   let members: MemberRow[] = [];
   let githubStatus: GithubConnectionStatus | null = null;
   let openRouterStatus: OpenRouterStatus | null = null;
+  let aiGatewayStatus: AiGatewayStatus | null = null;
   let agents: Agent[] = [];
+  let agentRuns: AgentRun[] = [];
 
   if (isAdmin) {
     const insforge = await createInsForgeServerClient();
@@ -48,9 +54,11 @@ export default async function SettingsPage() {
         .order('created_at', {ascending: true}),
       insforge.database.rpc('github_connection_status')
     ]);
-    [openRouterStatus, agents] = await Promise.all([
+    [openRouterStatus, aiGatewayStatus, agents, agentRuns] = await Promise.all([
       getOpenRouterStatusAction(),
-      getAgentsAction()
+      getAiGatewayStatusAction(),
+      getAgentsAction(),
+      getAgentRunsAction()
     ]);
 
     members = (memberRows ?? []) as unknown as MemberRow[];
@@ -110,7 +118,9 @@ export default async function SettingsPage() {
           <MembersTable members={members} currentUserId={user.id} />
           <GithubSettingsPanel status={githubStatus} />
           <OpenRouterPanel status={openRouterStatus} />
+          <VercelGatewayPanel status={aiGatewayStatus} />
           <AgentRosterPanel agents={agents} />
+          <AgentActivityPanel agents={agents} runs={agentRuns} />
         </>
       ) : null}
     </section>

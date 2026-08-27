@@ -82,7 +82,19 @@ const PROPOSAL_ACTIONS = [
   'task_update',
   'status_update',
   'lifecycle_advance',
+  'repo_patch',
 ] as const;
+
+// What this runtime will actually accept from a model.
+//
+// repo_patch is deliberately absent. A patch is a claim about the contents of a
+// repository, and this path has no workspace and has never read one — anything
+// it produced under that action would be invented. An agent that holds
+// repo_patch in its allowlist and is left on the OpenRouter runtime simply does
+// not get offered it, rather than being trusted to decline.
+const RUNTIME_PROPOSAL_ACTIONS: readonly string[] = PROPOSAL_ACTIONS.filter(
+  (action) => action !== 'repo_patch',
+);
 
 // ============================================================
 // Errors and responses
@@ -695,15 +707,75 @@ async function finishRun(admin: any, runId: string, patch: Record<string, unknow
     .eq('id', runId);
 }
 
+// A ping, not a handoff. The run is already durable in agent_runs, so a runner
+// that is down, full or slow costs nothing here: the row stays pending and the
+// next agent-tick drains it again. That is why a 429 is reported as success.
+async function dispatchJcodeRun(runId: string): Promise<Record<string, unknown>> {
+  const runnerUrl = Deno.env.get('AGENT_RUNNER_URL')?.replace(/\/$/, '');
+  const runnerSecret = Deno.env.get('AGENT_RUNNER_SECRET');
+  if (!runnerSecret) {
+    throw new ActionError('not_configured', 'the jcode runner is not configured', 503);
+  }
+  // Poll mode. A runner behind NAT has no address we can push to, so it claims
+  // pending runs on its own schedule through agent-runtime. Leaving the run
+  // pending is the whole mechanism here, not a degraded fallback.
+  if (!runnerUrl) return { run_id: runId, status: 'pending', queued: true };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${runnerUrl}/dispatch`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${runnerSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_id: runId }),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    // At capacity. Leaving it pending is the correct outcome, not an error.
+    if (response.status === 429) return { run_id: runId, status: 'pending', queued: true };
+    if (!response.ok) {
+      throw new ActionError(
+        'unreachable',
+        String(body?.error ?? `the jcode runner returned ${response.status}`),
+        503,
+      );
+    }
+    return { run_id: runId, status: 'dispatched', queued: Boolean(body?.accepted) };
+  } catch (error) {
+    if (error instanceof ActionError) throw error;
+    throw new ActionError('unreachable', 'the jcode runner is not reachable', 503);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function executeRun(admin: any, runId: string): Promise<Record<string, unknown>> {
   const { data: runs } = await admin.database
     .from('agent_runs')
-    .select('id, agent_id, trigger_message_id, schedule_id, channel_id, status')
+    .select('id, agent_id, trigger_message_id, schedule_id, channel_id, status, runtime')
     .eq('id', runId)
     .limit(1);
 
   const run = runs?.[0];
   if (!run) throw new ActionError('invalid', 'run not found');
+
+  // The harness runtime is executed elsewhere. This function keeps its queue and
+  // drain role but hands the run to the runner, which claims it through
+  // claim_jcode_agent_run under a lease. Nothing that authenticates this
+  // function — the admin API key, the OpenRouter credential, the caller's JWT —
+  // crosses that boundary; the runner gets a run id and proves itself with its
+  // own shared secret.
+  if (run.runtime === 'jcode') {
+    if (!PIPELINE_ENABLED) {
+      await finishRun(admin, runId, {
+        status: 'skipped',
+        execution_phase: 'skipped',
+        error: 'pipeline disabled',
+      });
+      return { run_id: runId, status: 'skipped' };
+    }
+    if (run.status !== 'pending') return { run_id: runId, status: run.status, claimed: false };
+    return await dispatchJcodeRun(runId);
+  }
 
   // Claim it. A run already past 'pending' has been picked up by another
   // invocation — the ping and the tick race by design, and this is where the
@@ -766,7 +838,7 @@ async function executeRun(admin: any, runId: string): Promise<Record<string, unk
     if (channel.archived_at) throw new ActionError('invalid', 'channel is archived');
 
     const allowed: string[] = (agent.allowed_actions ?? []).filter((a: string) =>
-      (PROPOSAL_ACTIONS as readonly string[]).includes(a),
+      RUNTIME_PROPOSAL_ACTIONS.includes(a),
     );
 
     // ---------- assemble ----------
@@ -1016,6 +1088,11 @@ async function actionRun(admin: any, body: any) {
 async function actionDrain(admin: any, body: any) {
   const limit = Math.min(Math.max(Number(body?.limit ?? 5), 1), 20);
 
+  // Deliberately not scoped by runtime. executeRun routes each row to its own
+  // execution path, and a harness run whose dispatch ping never landed — the
+  // runner was restarting, the network blipped — is retried here. Excluding
+  // them would mean a run queued while the runner was down stays pending until
+  // someone notices.
   const { data: pending } = await admin.database
     .from('agent_runs')
     .select('id')

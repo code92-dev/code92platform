@@ -1,0 +1,17 @@
+{
+  "name": "code92-agent-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "jcode operator harness runner for the Code 92 Command Center",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@1jehuang/jcode-sdk": "^1.1.0"
+  }
+}

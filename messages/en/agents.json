@@ -33,14 +33,24 @@
     "submit": "Create agent",
     "cancel": "Cancel",
     "save": "Save changes",
-    "handleLocked": "The handle cannot change — messages already address this agent by it."
+    "handleLocked": "The handle cannot change — messages already address this agent by it.",
+    "runtime": "Runtime",
+    "runtimeHint": "Where this agent runs. Most agents should stay on the OpenRouter path — it answers in one call and costs a fraction of a harness run.",
+    "runtimeWarning": "Harness agents run in an isolated container with a real workspace and a terminal. They still cannot change anything: a run ends as a message and proposals that someone has to approve. Only promote an agent to the harness once the runner is healthy, and start with a low budget.",
+    "toolProfile": "Tools",
+    "toolProfileHint": "Operator is the only profile with a workspace. The other two read the platform and nothing else.",
+    "maxToolSteps": "Tool step limit",
+    "maxToolStepsHint": "How many times the model may call a tool in one run. Stops a loop from becoming a bill.",
+    "maxRunSeconds": "Time limit (seconds)",
+    "maxRunSecondsHint": "How long one run may take before it is abandoned. Separate from the step limit: a run can stall without spending anything."
   },
   "actions": {
     "knowledge_note": "Knowledge notes",
     "task_create": "New work items",
     "task_update": "Work item edits",
     "status_update": "Status updates",
-    "lifecycle_advance": "Lifecycle phase advances"
+    "lifecycle_advance": "Lifecycle phase advances",
+    "repo_patch": "Change repository files"
   },
   "proposal": {
     "heading": "{agent} proposes",
@@ -57,7 +67,11 @@
     "waiverLabel": "Waiver reason",
     "waiverHint": "Required when a gate is missing evidence. Write it in your own words — this goes into the waiver register under your name.",
     "noteLabel": "Note (optional)",
-    "result": "Created"
+    "result": "Created",
+    "patchFiles": "{count, plural, one {# file} other {# files}}",
+    "committed": "Committed as {sha}.",
+    "commitPending": "Approved, but not committed yet.",
+    "commitFailedWith": "Approved, but the commit failed: {reason}"
   },
   "openrouter": {
     "title": "OpenRouter",
@@ -110,6 +124,20 @@
       "succeeded": "Done",
       "failed": "Failed",
       "skipped": "Skipped"
+    },
+    "subtitle": "The last runs, newest first. Harness runs take minutes and report the phase they are in.",
+    "unknownAgent": "a removed agent",
+    "phase": {
+      "queued": "queued",
+      "preparing": "preparing",
+      "researching": "researching",
+      "executing": "working",
+      "waiting": "waiting on a background task",
+      "finalizing": "finishing",
+      "completed": "completed",
+      "failed": "failed",
+      "cancelled": "cancelled",
+      "skipped": "skipped"
     }
   },
   "errors": {
@@ -123,6 +151,17 @@
     "agentDisabled": "That agent is disabled.",
     "adminRequired": "That decision needs an admin.",
     "waiverRequired": "Give a waiver reason before approving this.",
-    "notFound": "That is no longer there. Refresh and try again."
+    "notFound": "That is no longer there. Refresh and try again.",
+    "commitFailed": "The patch was approved but could not be committed. The card shows why.",
+    "commitUnrecorded": "The patch was committed, but the platform could not record it. Do not approve it again — check the repository first."
+  },
+  "runtimes": {
+    "direct_openrouter": "OpenRouter (one call)",
+    "jcode": "jcode harness (workspace)"
+  },
+  "toolProfiles": {
+    "chat": "Chat — read the conversation",
+    "research": "Research — read the platform",
+    "operator": "Operator — workspace and terminal"
   }
 }

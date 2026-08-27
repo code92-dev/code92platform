@@ -918,6 +918,279 @@ async function actionPushManifest(admin: any, caller: Caller, body: any) {
 }
 
 // ============================================================
+// Applying an approved agent patch
+// ============================================================
+
+// Where an agent-drafted patch is allowed to write.
+//
+// M14d ships the harness pointed at lifecycle evidence, so the blast radius is
+// held to the evidence tree. This is not a statement that agents can never
+// touch source — it is that the first thing they touch should be the thing a
+// reviewer can read end to end from a proposal card. Widening this is one
+// constant and a decision, deliberately in that order.
+const AGENT_PATCH_ROOTS = ['docs/'];
+
+const MAX_AGENT_PATCH_FILES = 20;
+const MAX_AGENT_PATCH_BYTES = 200_000;
+
+// Rejects anything that could write outside the tree the approver thinks they
+// approved. Every one of these has been a real path-traversal bug somewhere.
+function assertSafePatchPath(path: string): void {
+  if (!path || path.length > 400) {
+    throw new ActionError('invalid', 'a patch path is required and must be under 400 characters');
+  }
+  if (path.startsWith('/') || path.includes('..') || path.includes('\\')) {
+    throw new ActionError('invalid', `unsafe patch path: ${path}`);
+  }
+  if (path.split('/').some((segment) => segment === '' || segment === '.')) {
+    throw new ActionError('invalid', `unsafe patch path: ${path}`);
+  }
+  // .git is not a directory in the repository, it is the repository. A patch
+  // that writes there is rewriting history, not content.
+  if (path.startsWith('.git/') || path.includes('/.git/')) {
+    throw new ActionError('invalid', `a patch may not write into .git: ${path}`);
+  }
+  if (!AGENT_PATCH_ROOTS.some((root) => path.startsWith(root))) {
+    throw new ActionError(
+      'invalid',
+      `agent patches may only write under ${AGENT_PATCH_ROOTS.join(', ')} — ${path} is outside that`,
+    );
+  }
+}
+
+// Commits a patch that a human has already approved.
+//
+// The authority here is the caller's, not the agent's: requireProduct
+// re-derives owner-or-admin on a non-archived product from this caller's own
+// JWT, which is the identical rule that governs a person pushing lifecycle
+// evidence by hand. The agent's fingerprint stays visible in the proposal and
+// in the commit message, but the commit is the approver's.
+async function actionApplyAgentPatch(admin: any, caller: Caller, body: any) {
+  const proposalId = typeof body.proposalId === 'string' ? body.proposalId : '';
+  if (!/^[0-9a-f-]{36}$/i.test(proposalId)) throw new ActionError('invalid', 'proposalId is required');
+
+  const { data: proposals } = await admin.database
+    .from('agent_proposals')
+    .select('id, action, status, payload, product_id, agent_id, decided_by, commit_sha')
+    .eq('id', proposalId)
+    .limit(1);
+  const proposal = proposals?.[0];
+
+  if (!proposal) throw new ActionError('not_found', 'proposal not found', 404);
+  if (proposal.action !== 'repo_patch') throw new ActionError('invalid', 'that proposal is not a repository patch');
+  if (proposal.status !== 'approved') throw new ActionError('invalid', 'that patch has not been approved');
+  if (proposal.commit_sha) throw new ActionError('invalid', 'that patch has already been committed');
+  // The approver commits their own decision. Anyone else asking to push it is
+  // asking to act on an authorisation that was not theirs.
+  if (proposal.decided_by !== caller.userId) {
+    throw new ActionError('forbidden', 'only the person who approved this patch can commit it', 403);
+  }
+
+  const product = await requireProduct(admin, caller, proposal.product_id);
+  if (!product.github_repo) throw new ActionError('no_repo', 'this product has no linked repository');
+
+  const payload = proposal.payload ?? {};
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  if (!files.length) throw new ActionError('invalid', 'that patch changes no files');
+  if (files.length > MAX_AGENT_PATCH_FILES) {
+    throw new ActionError('invalid', `a patch may not change more than ${MAX_AGENT_PATCH_FILES} files`);
+  }
+
+  const changes: FileChange[] = [];
+  for (const file of files) {
+    const path = String(file?.path ?? '').trim();
+    assertSafePatchPath(path);
+
+    if (file?.remove === true) {
+      changes.push({ path, remove: true });
+      continue;
+    }
+
+    const content = typeof file?.content === 'string' ? file.content : null;
+    if (content === null) throw new ActionError('invalid', `patch entry for ${path} has no content`);
+    const bytes = new TextEncoder().encode(content);
+    if (bytes.length > MAX_AGENT_PATCH_BYTES) {
+      throw new ActionError('invalid', `${path} is ${bytes.length} bytes, over the patch limit`);
+    }
+    changes.push({ path, base64: bytesToBase64(bytes) });
+  }
+
+  const { data: agents } = await admin.database
+    .from('agents')
+    .select('handle')
+    .eq('user_id', proposal.agent_id)
+    .limit(1);
+  const handle = agents?.[0]?.handle ?? 'agent';
+
+  const { token } = await loadConnection(admin);
+  const branch = product.github_default_branch || 'main';
+
+  // Provenance in the commit itself, so the repository is legible without the
+  // platform next to it. Co-authored-by is the convention Git tooling already
+  // understands for "a person committed work that was not solely theirs".
+  const message = [
+    String(payload.message ?? '').trim().slice(0, 200) || `Apply patch proposed by @${handle}`,
+    '',
+    `Proposed by @${handle} in the Code 92 Command Center.`,
+    `Proposal: ${proposal.id}`,
+  ].join('\n');
+
+  try {
+    const sha = await commitFiles(token, product.github_repo, branch, changes, message);
+    await logSync(admin, {
+      product_id: product.id,
+      action: 'apply_agent_patch',
+      repo: product.github_repo,
+      commit_sha: sha,
+      status: 'ok',
+      actor_id: caller.userId,
+    });
+    return { ok: true, commit_sha: sha, repo: product.github_repo, branch, files: changes.length };
+  } catch (error) {
+    await logSync(admin, {
+      product_id: product.id,
+      action: 'apply_agent_patch',
+      repo: product.github_repo,
+      status: 'error',
+      error: (error as Error).message.slice(0, 500),
+      actor_id: caller.userId,
+    });
+    throw error;
+  }
+}
+
+// ============================================================
+// Agent repository reads
+// ============================================================
+// Read-only, service-authenticated, and here rather than in agent-runtime for
+// one reason: the org PAT decrypts in exactly one function and this is that
+// function. Giving the harness's control plane its own copy of GITHUB_TOKEN_KEY
+// would double the number of places a write-capable org credential lives, to
+// save one hop.
+//
+// There is no caller identity in these actions and there should not be. The
+// authority is the shared secret plus the product id, which agent-runtime
+// derived from the run's channel — an agent cannot name a product it is not
+// bound to, because it never supplies one.
+//
+// Nothing here writes. An agent's route into a repository is a proposal that a
+// human approves, which lands through actionPushArtifact under that approver's
+// own authority.
+
+function isAgentServiceCall(req: Request): boolean {
+  const secret = Deno.env.get('AGENT_REPO_SECRET');
+  if (!secret) return false;
+  const supplied = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  // Constant-time-ish: compare full strings, never short-circuit on a prefix.
+  return supplied.length === secret.length && supplied === secret;
+}
+
+async function agentProduct(admin: any, productId: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(productId ?? ''))) {
+    throw new ActionError('invalid', 'product_id is required');
+  }
+  const { data } = await admin.database
+    .from('products')
+    .select('id, name, github_repo, github_default_branch, archived_at')
+    .eq('id', productId)
+    .limit(1);
+  const product = data?.[0];
+  if (!product || product.archived_at) throw new ActionError('invalid', 'product is unavailable');
+  if (!product.github_repo) throw new ActionError('no_repo', 'this product has no linked repository');
+  return product;
+}
+
+// Returns a short-lived signed URL, not the archive itself.
+//
+// GitHub answers the tarball endpoint with a 302 to a signed codeload URL that
+// needs no authentication and expires in minutes. Handing that to the runner
+// means the PAT never leaves this function and the archive never passes through
+// an edge function's memory — a 200 MB repository would not fit there anyway.
+//
+// The runner needs egress to codeload.github.com for this. That is a GET
+// against a signed, expiring, read-only URL; it is not a credential, and the
+// harness's own toolset has no fetch capability to reuse it with.
+async function actionAgentRepoArchive(admin: any, body: any) {
+  const product = await agentProduct(admin, body?.product_id);
+  const { token } = await loadConnection(admin);
+  const ref = String(body?.ref || product.github_default_branch || 'main').slice(0, 200);
+
+  const res = await gh(token, `/repos/${product.github_repo}/tarball/${encodeURIComponent(ref)}`, {
+    redirect: 'manual',
+  });
+  const location = res.headers.get('location');
+  if (!location) {
+    throw new ActionError('github_error', `GitHub did not return an archive URL (HTTP ${res.status})`);
+  }
+  return {
+    repo: product.github_repo,
+    ref,
+    // Signed and short-lived. Never recorded in an event or a session row.
+    url: location,
+    expires_in_seconds: 300,
+  };
+}
+
+// Commit history, optionally for one path. This is what the agent gets instead
+// of a .git directory: the working tree arrives as an archive with no history,
+// and "what changed here recently and why" is answered by asking rather than by
+// shipping a pack file the sandbox could then push from.
+async function actionAgentRepoHistory(admin: any, body: any) {
+  const product = await agentProduct(admin, body?.product_id);
+  const { token } = await loadConnection(admin);
+  const limit = Math.min(Math.max(Number(body?.limit ?? 20), 1), 100);
+  const path = typeof body?.path === 'string' && body.path.trim() ? body.path.trim().slice(0, 400) : null;
+
+  const query = new URLSearchParams({ per_page: String(limit) });
+  if (path) query.set('path', path);
+  if (body?.ref) query.set('sha', String(body.ref).slice(0, 200));
+
+  const commits = await ghJson(token, `/repos/${product.github_repo}/commits?${query}`);
+  return {
+    repo: product.github_repo,
+    path,
+    commits: (commits ?? []).slice(0, limit).map((commit: any) => ({
+      sha: commit.sha,
+      message: String(commit.commit?.message ?? '').slice(0, 1000),
+      author: commit.commit?.author?.name ?? null,
+      date: commit.commit?.author?.date ?? null,
+    })),
+  };
+}
+
+// One file at one ref. Text only: a PDF decoded as UTF-8 is noise that costs
+// tokens and teaches the model nothing, which is the same rule the knowledge
+// base applies when it lists an unreadable attachment by title alone.
+async function actionAgentFileAtRef(admin: any, body: any) {
+  const product = await agentProduct(admin, body?.product_id);
+  const { token } = await loadConnection(admin);
+  const path = String(body?.path ?? '').trim();
+  if (!path || path.includes('..')) throw new ActionError('invalid', 'a repository-relative path is required');
+  const ref = String(body?.ref || product.github_default_branch || 'main').slice(0, 200);
+
+  const meta = await ghJson(
+    token,
+    `/repos/${product.github_repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`,
+  );
+  if (Array.isArray(meta)) throw new ActionError('invalid', 'that path is a directory');
+  if (meta.encoding !== 'base64' || typeof meta.content !== 'string') {
+    throw new ActionError('invalid', 'that file is not readable as text');
+  }
+  if (Number(meta.size) > 200_000) {
+    throw new ActionError('invalid', `that file is ${meta.size} bytes, too large to read in a run`);
+  }
+
+  const bytes = base64ToBytes(meta.content.replace(/\n/g, ''));
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new ActionError('invalid', 'that file is binary');
+  }
+  return { repo: product.github_repo, path, ref, size: meta.size, content: text.slice(0, 100_000) };
+}
+
+// ============================================================
 // Entry point
 // ============================================================
 
@@ -932,15 +1205,40 @@ export default async function (req: Request): Promise<Response> {
   const baseUrl = Deno.env.get('INSFORGE_BASE_URL')!;
   const admin = createAdminClient({ baseUrl, apiKey: Deno.env.get('API_KEY')! });
 
-  const caller = await resolveCaller(req, admin, baseUrl);
-  if (!caller) return errorResponse('forbidden', 'Unauthorized', 401);
-
   let body: any;
   try {
     body = await req.json();
   } catch {
     return errorResponse('invalid', 'body must be JSON');
   }
+
+  // Agent repository reads authenticate with a shared secret rather than a JWT,
+  // because there is no user behind a harness run. They are handled before the
+  // caller gate and are the only actions that bypass it — every one of them is
+  // read-only and product-scoped.
+  if (
+    body?.action === 'agent_repo_archive' ||
+    body?.action === 'agent_repo_history' ||
+    body?.action === 'agent_file_at_ref'
+  ) {
+    if (!isAgentServiceCall(req)) return errorResponse('forbidden', 'Unauthorized', 401);
+    try {
+      switch (body.action) {
+        case 'agent_repo_archive':
+          return jsonResponse(await actionAgentRepoArchive(admin, body));
+        case 'agent_repo_history':
+          return jsonResponse(await actionAgentRepoHistory(admin, body));
+        default:
+          return jsonResponse(await actionAgentFileAtRef(admin, body));
+      }
+    } catch (e) {
+      if (e instanceof ActionError) return errorResponse(e.code, e.message, e.status);
+      return errorResponse('generic', (e as Error).message.slice(0, 500), 500);
+    }
+  }
+
+  const caller = await resolveCaller(req, admin, baseUrl);
+  if (!caller) return errorResponse('forbidden', 'Unauthorized', 401);
 
   try {
     switch (body?.action) {
@@ -960,6 +1258,8 @@ export default async function (req: Request): Promise<Response> {
         return jsonResponse(await actionDeleteArtifact(admin, caller, body));
       case 'push_manifest':
         return jsonResponse(await actionPushManifest(admin, caller, body));
+      case 'apply_agent_patch':
+        return jsonResponse(await actionApplyAgentPatch(admin, caller, body));
       default:
         return errorResponse('invalid', `unknown action: ${body?.action}`);
     }

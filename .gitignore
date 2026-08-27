@@ -20,6 +20,8 @@
 
 # dependencies
 /node_modules
+# Nested workspaces, e.g. services/agent-runner
+node_modules/
 
 # next.js
 /.next/

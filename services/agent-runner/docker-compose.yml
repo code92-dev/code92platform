@@ -1,0 +1,53 @@
+# Running the runner on your own VPS.
+#
+# In this configuration nothing reaches the box from the internet: the runner
+# polls the platform for work over an outbound HTTPS connection. There is no
+# published port, no DNS record and no TLS certificate to manage, and the VPS
+# can sit behind NAT.
+#
+#   cp .env.example .env    # fill in the two secrets
+#   docker compose up -d
+#   docker compose exec runner node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.json()).then(console.log)"
+services:
+  runner:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Ask the platform for work every 5 seconds while it is busy, backing off
+      # to once a minute while the queue is empty. Every poll is a billed
+      # function invocation, so an idle runner should be quiet.
+      POLL_INTERVAL_SECONDS: "5"
+      POLL_IDLE_SECONDS: "60"
+      MAX_CONCURRENT_RUNS: "1"
+
+    # No `ports:` on purpose. /healthz is reachable from inside the container
+    # and from the host over the compose network; publishing it would put a
+    # bearer-secret endpoint on the public internet for no gain.
+
+    # The harness runs untrusted model output with a terminal. These are the
+    # bounds that hold when the tool allow-list does not.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    mem_limit: 2g
+    # If the harness fails to start, relax this first — a Rust binary that wants
+    # a cache directory somewhere unexpected will fail in a way that looks like
+    # a jcode bug and is not.
+    read_only: true
+    tmpfs:
+      # A workspace needs to be writable; the rest of the filesystem does not.
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - runner-data:/var/lib/code92-agent-runner
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  runner-data:

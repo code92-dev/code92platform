@@ -6,8 +6,10 @@ import {z} from 'zod';
 import {getOwnMembership, getSessionUser} from '@/lib/auth';
 import {createInsForgeServerClient} from '@/lib/insforge/server';
 import {
+  AGENT_RUNTIMES,
   MODEL_SLUG_PATTERN,
   PROPOSAL_ACTIONS,
+  TOOL_PROFILES,
   type Agent,
   type AgentProposal,
   type AgentRun,
@@ -107,7 +109,7 @@ function mapDatabaseError(error: unknown): string {
 }
 
 const AGENT_COLUMNS =
-  'user_id, handle, display_name, description, system_prompt, model, allowed_actions, temperature, max_output_tokens, enabled, budget_usd_month, created_at';
+  'user_id, handle, display_name, description, system_prompt, model, allowed_actions, temperature, max_output_tokens, enabled, budget_usd_month, runtime, tool_profile, max_tool_steps, max_run_seconds, created_at';
 
 export async function getAgentsAction(): Promise<Agent[]> {
   const caller = await requireActiveCaller();
@@ -310,7 +312,15 @@ const updateAgentSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxOutputTokens: z.number().int().min(256).max(32000).optional(),
   budgetUsdMonth: z.number().min(0).max(1000).optional(),
-  enabled: z.boolean().optional()
+  enabled: z.boolean().optional(),
+  // Deliberately settable only on update, never at creation. Promoting an
+  // agent to the harness is a separate, explicit decision made once the runner
+  // is known to be healthy — not something that can ride along in the form
+  // that creates the agent in the first place.
+  runtime: z.enum(AGENT_RUNTIMES).optional(),
+  toolProfile: z.enum(TOOL_PROFILES).optional(),
+  maxToolSteps: z.number().int().min(0).max(100).optional(),
+  maxRunSeconds: z.number().int().min(30).max(1800).optional()
 });
 
 // Edits go straight to the table: the UPDATE policy is admins-only and the
@@ -336,6 +346,10 @@ export async function updateAgentAction(
   if (rest.maxOutputTokens !== undefined) patch.max_output_tokens = rest.maxOutputTokens;
   if (rest.budgetUsdMonth !== undefined) patch.budget_usd_month = rest.budgetUsdMonth;
   if (rest.enabled !== undefined) patch.enabled = rest.enabled;
+  if (rest.runtime !== undefined) patch.runtime = rest.runtime;
+  if (rest.toolProfile !== undefined) patch.tool_profile = rest.toolProfile;
+  if (rest.maxToolSteps !== undefined) patch.max_tool_steps = rest.maxToolSteps;
+  if (rest.maxRunSeconds !== undefined) patch.max_run_seconds = rest.maxRunSeconds;
 
   if (Object.keys(patch).length === 0) return {ok: true};
 
@@ -423,8 +437,71 @@ export async function decideProposalAction(
   // this layer could infer.
   if (error) return {ok: false, error: mapDatabaseError(error)};
 
+  // A repo_patch is not finished when the RPC returns. PostgreSQL took the
+  // decision under a row lock — which is what stops two people committing the
+  // same patch twice — but it cannot make a GitHub call, so the commit happens
+  // here, through the function that holds the org PAT, authenticated as this
+  // approver.
+  //
+  // The order matters. Approving first and committing second means a failed
+  // commit leaves a visible 'approved, not committed' state that says so and
+  // can be retried. Committing first would mean a crash between the two leaves
+  // a repository that changed and a platform that never recorded it.
+  if (parsed.data.decision === 'approve') {
+    const deferred = await applyApprovedPatch(insforge, parsed.data.proposalId);
+    if (deferred) {
+      revalidatePath('/channels');
+      return deferred;
+    }
+  }
+
   revalidatePath('/channels');
   return {ok: true};
+}
+
+// Returns null when there was nothing to commit, so an ordinary proposal takes
+// no extra round trip.
+async function applyApprovedPatch(
+  insforge: Awaited<ReturnType<typeof createInsForgeServerClient>>,
+  proposalId: string
+): Promise<AgentActionResult | null> {
+  const {data: rows} = await insforge.database
+    .from('agent_proposals')
+    .select('id, action, commit_sha')
+    .eq('id', proposalId)
+    .limit(1);
+
+  const proposal = rows?.[0];
+  if (proposal?.action !== 'repo_patch' || proposal.commit_sha) return null;
+
+  const {data, error} = await insforge.functions.invoke('github-sync', {
+    method: 'POST',
+    body: {action: 'apply_agent_patch', proposalId}
+  });
+
+  const commitSha =
+    typeof (data as {commit_sha?: unknown})?.commit_sha === 'string'
+      ? (data as {commit_sha: string}).commit_sha
+      : null;
+
+  // Recorded either way. A patch whose commit failed has to say so on the card;
+  // silently leaving commit_sha null would be indistinguishable from a commit
+  // still in flight.
+  const {error: recordError} = await insforge.database.rpc('record_agent_proposal_commit', {
+    p_proposal_id: proposalId,
+    p_commit_sha: commitSha,
+    p_error: commitSha
+      ? null
+      : ((error as {message?: string})?.message ?? 'the patch could not be committed').slice(0, 500)
+  });
+
+  // The one outcome worse than a failed commit: a commit that happened and was
+  // never written down. The card would read 'approved, not committed' over a
+  // repository that has already changed, and the obvious next move — approve
+  // again — would commit it twice. Say so instead.
+  if (commitSha && recordError) return {ok: false, error: 'commitUnrecorded'};
+  if (!commitSha) return {ok: false, error: 'commitFailed'};
+  return null;
 }
 
 export async function getProposalsForChannelAction(
@@ -437,7 +514,7 @@ export async function getProposalsForChannelAction(
   const {data} = await insforge.database
     .from('agent_proposals')
     .select(
-      'id, message_id, channel_id, agent_id, run_id, product_id, action, payload, reasoning, status, decided_by, decided_at, decision_note, result_type, result_id, created_at'
+      'id, message_id, channel_id, agent_id, run_id, product_id, action, payload, reasoning, status, decided_by, decided_at, decision_note, result_type, result_id, commit_sha, commit_error, created_at'
     )
     .eq('channel_id', channelId)
     .order('created_at', {ascending: false});
@@ -555,7 +632,7 @@ export async function getAgentRunsAction(limit = 50): Promise<AgentRun[]> {
   const {data} = await insforge.database
     .from('agent_runs')
     .select(
-      'id, agent_id, trigger_message_id, schedule_id, model, status, prompt_tokens, completion_tokens, cost_usd, error, created_at'
+      'id, agent_id, trigger_message_id, schedule_id, channel_id, model, status, prompt_tokens, completion_tokens, cost_usd, error, runtime, execution_phase, attempt, heartbeat_at, lease_expires_at, jcode_session_id, tool_summary, cancel_requested_at, started_at, finished_at, created_at'
     )
     .order('created_at', {ascending: false})
     .limit(limit);

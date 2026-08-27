@@ -9,7 +9,11 @@ export const PROPOSAL_ACTIONS = [
   'task_create',
   'task_update',
   'status_update',
-  'lifecycle_advance'
+  'lifecycle_advance',
+  // The harness's only route into a repository. Approving it does not write
+  // anything by itself: decide_agent_proposal records the decision, and
+  // github-sync commits under the approver's own authority afterwards.
+  'repo_patch'
 ] as const;
 export type ProposalAction = (typeof PROPOSAL_ACTIONS)[number];
 
@@ -31,6 +35,48 @@ export const RUN_STATUSES = [
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+// Which execution environment answers a mention.
+//
+// 'direct_openrouter' is one completion inside functions/thread-agent.ts — the
+// right shape for a channel reply and the default for every agent.
+// 'jcode' hands the run to the operator harness, which claims it under a lease
+// and can spend minutes with tools before it answers.
+//
+// Mirrors migrations/20260826130000_add-jcode-agent-harness.sql.
+export const AGENT_RUNTIMES = ['direct_openrouter', 'jcode'] as const;
+export type AgentRuntime = (typeof AGENT_RUNTIMES)[number];
+
+// Which tools an agent gets. Only 'operator' is meaningful under the jcode
+// runtime — it is the profile that is given a workspace.
+export const TOOL_PROFILES = ['chat', 'research', 'operator'] as const;
+export type ToolProfile = (typeof TOOL_PROFILES)[number];
+
+// Finer-grained than RunStatus, which stays what the rest of the app reads.
+// status answers "did it work"; this answers "what is it doing", which is the
+// only useful thing to show during the minutes a harness run is alive.
+export const EXECUTION_PHASES = [
+  'queued',
+  'preparing',
+  'researching',
+  'executing',
+  'waiting',
+  'finalizing',
+  'completed',
+  'failed',
+  'cancelled',
+  'skipped'
+] as const;
+export type ExecutionPhase = (typeof EXECUTION_PHASES)[number];
+
+// Phases that mean the run is over, whatever the outcome. Used by the activity
+// panel to stop polling and by the roster to stop showing a spinner.
+export const TERMINAL_PHASES: ReadonlySet<ExecutionPhase> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'skipped'
+]);
+
 // Which actions need an admin to approve them. The database is the authority —
 // decide_agent_proposal delegates to advance_lifecycle_phase, which re-derives
 // the approver's rights itself. This mirror exists so the card can disable the
@@ -40,6 +86,11 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 export const ADMIN_ONLY_ACTIONS: ReadonlySet<ProposalAction> = new Set([
   'lifecycle_advance'
 ]);
+
+// Actions whose approval is not finished when decide_agent_proposal returns.
+// A repo_patch still has to be committed through github-sync, so the card has
+// to keep showing it until commit_sha lands or commit_error explains why not.
+export const DEFERRED_ACTIONS: ReadonlySet<ProposalAction> = new Set(['repo_patch']);
 
 // Actions that take a waiver reason typed by the approver at decision time.
 // Never pre-filled from the proposal payload: an AI-drafted justification for
@@ -64,6 +115,13 @@ export type Agent = {
   max_output_tokens: number;
   enabled: boolean;
   budget_usd_month: number;
+  runtime: AgentRuntime;
+  tool_profile: ToolProfile;
+  // Two independent ceilings, because they fail differently: a model looping
+  // over one tool burns budget without wall-clock, a model waiting on a slow
+  // command burns wall-clock without tokens.
+  max_tool_steps: number;
+  max_run_seconds: number;
   created_at: string;
 };
 
@@ -83,7 +141,18 @@ export type AgentProposal = {
   decision_note: string | null;
   result_type: string | null;
   result_id: string | null;
+  // repo_patch only. Null while a patch is approved but not yet committed —
+  // a state the card surfaces rather than hides, because the alternative is a
+  // platform that says "approved" about a repository that never changed.
+  commit_sha: string | null;
+  commit_error: string | null;
   created_at: string;
+};
+
+// The payload shape of a repo_patch proposal.
+export type RepoPatchPayload = {
+  message: string;
+  files: Array<{path: string; content?: string; remove?: boolean}>;
 };
 
 export type AgentSchedule = {
@@ -106,13 +175,93 @@ export type AgentRun = {
   agent_id: string | null;
   trigger_message_id: string | null;
   schedule_id: string | null;
+  channel_id: string | null;
   model: string | null;
   status: RunStatus;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost_usd: number | null;
   error: string | null;
+  // Copied from the agent when the run was queued, never read back through the
+  // FK: editing an agent between the mention and the drain must not move an
+  // already-queued request into a different execution environment.
+  runtime: AgentRuntime;
+  execution_phase: ExecutionPhase;
+  attempt: number;
+  heartbeat_at: string | null;
+  lease_expires_at: string | null;
+  jcode_session_id: string | null;
+  tool_summary: ToolSummaryEntry[];
+  cancel_requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
   created_at: string;
+};
+
+// The flattened trace on agent_runs.tool_summary. The full event stream lives
+// in agent_run_events; this is what the run list can show without joining a
+// table that grows by hundreds of rows per run.
+export type ToolSummaryEntry = {
+  tool: string;
+  calls: number;
+  failed?: number;
+};
+
+// One row per meaningful thing the harness did — what makes a run that takes
+// minutes legible instead of a spinner.
+export type AgentRunEvent = {
+  id: string;
+  run_id: string;
+  phase: ExecutionPhase;
+  event_type: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+};
+
+// The platform's index into the harness's own on-disk session state, so a
+// follow-up mention in the same thread resumes rather than restarting cold.
+// Scoped per channel and never reused across them.
+export type AgentSession = {
+  id: string;
+  agent_id: string;
+  channel_id: string;
+  thread_root_id: string | null;
+  jcode_session_id: string;
+  // Digest of the system prompt, tool profile and model this session was built
+  // under. The control plane recomputes it at claim time and declines to
+  // resume a session whose fingerprint no longer matches, so an edited agent
+  // starts fresh instead of quietly continuing under its old instructions.
+  prompt_fingerprint: string;
+  last_run_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const JOB_STATES = [
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'lost'
+] as const;
+export type JobState = (typeof JOB_STATES)[number];
+
+// Background commands, tracked as rows rather than left inside the harness
+// process — the process is the thing that dies. 'lost' is what a compute
+// restart leaves behind, and it is a retry someone can make deliberately.
+export type AgentJob = {
+  id: string;
+  run_id: string;
+  agent_id: string;
+  channel_id: string;
+  jcode_background_id: string;
+  state: JobState;
+  command_summary: string;
+  log_key: string | null;
+  started_at: string;
+  heartbeat_at: string | null;
+  finished_at: string | null;
+  error: string | null;
 };
 
 // What openrouter_connection_status() returns. The ciphertext is structurally

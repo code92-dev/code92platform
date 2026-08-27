@@ -8,6 +8,7 @@ import RelativeTime from '@/components/RelativeTime';
 import {decideProposalAction} from '@/lib/actions/agents';
 import {
   ADMIN_ONLY_ACTIONS,
+  DEFERRED_ACTIONS,
   WAIVER_ACTIONS,
   type AgentProposal
 } from '@/lib/agents';
@@ -42,6 +43,14 @@ export default function ProposalCard({
 
   const needsAdmin = ADMIN_ONLY_ACTIONS.has(proposal.action);
   const takesWaiver = WAIVER_ACTIONS.has(proposal.action);
+  // A patch is approved in the database and committed afterwards, so 'approved'
+  // is not the end of its story and the card must not pretend otherwise.
+  const isDeferred = DEFERRED_ACTIONS.has(proposal.action);
+  const patchFiles =
+    proposal.action === 'repo_patch' &&
+    Array.isArray((proposal.payload as {files?: unknown}).files)
+      ? ((proposal.payload as {files: Array<{path?: string; remove?: boolean}>}).files ?? [])
+      : [];
   const blocked = needsAdmin && !isAdmin;
   const decided = proposal.status !== 'pending';
 
@@ -94,6 +103,31 @@ export default function ProposalCard({
         </p>
       </div>
 
+      {patchFiles.length ? (
+        <div className="mt-3">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-faint">
+            {t('proposal.patchFiles', {count: patchFiles.length})}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {patchFiles.map((file, index) => (
+              <li
+                key={`${file.path ?? index}`}
+                dir="ltr"
+                className="flex items-center gap-2 font-mono text-[11px] text-muted"
+              >
+                <span
+                  className={file.remove ? 'text-danger' : 'text-accent'}
+                  aria-hidden="true"
+                >
+                  {file.remove ? '−' : '+'}
+                </span>
+                <span className="truncate">{file.path}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <button
         type="button"
         onClick={() => setShowPayload((v) => !v)}
@@ -112,6 +146,20 @@ export default function ProposalCard({
         <pre className="mt-2 overflow-x-auto rounded border border-hairline bg-bg p-3 font-mono text-[11px] leading-relaxed text-muted">
           {JSON.stringify(proposal.payload, null, 2)}
         </pre>
+      ) : null}
+
+      {decided && isDeferred && proposal.status === 'approved' ? (
+        proposal.commit_sha ? (
+          <p className="mt-3 font-mono text-[11px] text-muted">
+            {t('proposal.committed', {sha: proposal.commit_sha.slice(0, 7)})}
+          </p>
+        ) : (
+          <p dir="auto" className="mt-3 text-sm text-danger">
+            {proposal.commit_error
+              ? t('proposal.commitFailedWith', {reason: proposal.commit_error})
+              : t('proposal.commitPending')}
+          </p>
+        )
       ) : null}
 
       {decided ? (

@@ -10,10 +10,14 @@ import {
   updateAgentAction
 } from '@/lib/actions/agents';
 import {
+  AGENT_RUNTIMES,
   PROPOSAL_ACTIONS,
+  TOOL_PROFILES,
   isValidModelSlug,
   type Agent,
-  type ProposalAction
+  type AgentRuntime,
+  type ProposalAction,
+  type ToolProfile
 } from '@/lib/agents';
 
 // Provisioning and editing agents. Admin-only, enforced by RLS on public.agents
@@ -34,6 +38,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [allowed, setAllowed] = useState<ProposalAction[]>([]);
   const [budget, setBudget] = useState('5');
+  const [runtime, setRuntime] = useState<AgentRuntime>('direct_openrouter');
+  const [toolProfile, setToolProfile] = useState<ToolProfile>('chat');
+  const [maxToolSteps, setMaxToolSteps] = useState('12');
+  const [maxRunSeconds, setMaxRunSeconds] = useState('240');
 
   const editing = mode !== null && mode !== 'create';
 
@@ -45,6 +53,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
     setSystemPrompt('');
     setAllowed([]);
     setBudget('5');
+    setRuntime('direct_openrouter');
+    setToolProfile('chat');
+    setMaxToolSteps('12');
+    setMaxRunSeconds('240');
     setError(null);
   }
 
@@ -64,6 +76,10 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
     setSystemPrompt(agent.system_prompt);
     setAllowed([...agent.allowed_actions]);
     setBudget(String(agent.budget_usd_month ?? 5));
+    setRuntime(agent.runtime ?? 'direct_openrouter');
+    setToolProfile(agent.tool_profile ?? 'chat');
+    setMaxToolSteps(String(agent.max_tool_steps ?? 12));
+    setMaxRunSeconds(String(agent.max_run_seconds ?? 240));
     setError(null);
     setMode(agent.user_id);
   }
@@ -100,7 +116,11 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
             systemPrompt: systemPrompt.trim(),
             model: model.trim(),
             allowedActions: allowed,
-            budgetUsdMonth: Number(budget) || 5
+            budgetUsdMonth: Number(budget) || 5,
+            runtime,
+            toolProfile,
+            maxToolSteps: Number(maxToolSteps) || 12,
+            maxRunSeconds: Number(maxRunSeconds) || 240
           })
         : await createAgentAction({
             handle: handle.trim().toLowerCase(),
@@ -259,6 +279,70 @@ export default function AgentRosterPanel({agents}: {agents: Agent[]}) {
               className="w-32 rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink focus:border-accent focus:outline-none"
             />
           </Field>
+
+          {/* Runtime is edit-only on purpose. An agent is created on the
+              OpenRouter path and promoted to the harness afterwards, as a
+              separate decision taken once the runner is known to be healthy.
+              Offering it in the create form would make the riskiest setting the
+              easiest one to pick by accident. */}
+          {editing ? (
+            <div className="flex flex-col gap-3 rounded border border-hairline bg-raised/40 p-3">
+              <Field label={t('create.runtime')} hint={t('create.runtimeHint')}>
+                <select
+                  value={runtime}
+                  onChange={(e) => setRuntime(e.target.value as AgentRuntime)}
+                  className="w-full rounded border border-hairline bg-bg px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+                >
+                  {AGENT_RUNTIMES.map((value) => (
+                    <option key={value} value={value}>
+                      {t(`runtimes.${value}`)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              {runtime === 'jcode' ? (
+                <>
+                  <p className="text-xs text-amber">{t('create.runtimeWarning')}</p>
+
+                  <Field label={t('create.toolProfile')} hint={t('create.toolProfileHint')}>
+                    <select
+                      value={toolProfile}
+                      onChange={(e) => setToolProfile(e.target.value as ToolProfile)}
+                      className="w-full rounded border border-hairline bg-bg px-3 py-2 text-sm text-ink focus:border-accent focus:outline-none"
+                    >
+                      {TOOL_PROFILES.map((value) => (
+                        <option key={value} value={value}>
+                          {t(`toolProfiles.${value}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label={t('create.maxToolSteps')} hint={t('create.maxToolStepsHint')}>
+                      <input
+                        value={maxToolSteps}
+                        onChange={(e) => setMaxToolSteps(e.target.value)}
+                        dir="ltr"
+                        inputMode="numeric"
+                        className="w-full rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink focus:border-accent focus:outline-none"
+                      />
+                    </Field>
+                    <Field label={t('create.maxRunSeconds')} hint={t('create.maxRunSecondsHint')}>
+                      <input
+                        value={maxRunSeconds}
+                        onChange={(e) => setMaxRunSeconds(e.target.value)}
+                        dir="ltr"
+                        inputMode="numeric"
+                        className="w-full rounded border border-hairline bg-bg px-3 py-2 font-mono text-sm text-ink focus:border-accent focus:outline-none"
+                      />
+                    </Field>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
 
           {error ? (
             <p className="text-xs text-danger">{errorText(error)}</p>

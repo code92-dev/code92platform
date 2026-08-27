@@ -1,0 +1,25 @@
+# Only needed if the runner is hosted on Fly rather than as an InsForge compute
+# service. The InsForge deployment is the documented path; this file exists so
+# that choice stays reversible.
+app = "code92-agent-runner"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  MAX_CONCURRENT_RUNS = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Never scaled to zero. A run is dispatched by an HTTP ping with a live lease
+  # behind it; a cold start would burn the lease before the machine answered.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

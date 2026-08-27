@@ -1,6 +1,7 @@
 import {ShieldCheck} from 'lucide-react';
 import {getTranslations} from 'next-intl/server';
 
+import AgentActivityPanel from '@/components/agents/AgentActivityPanel';
 import AgentRosterPanel from '@/components/agents/AgentRosterPanel';
 import OpenRouterPanel from '@/components/agents/OpenRouterPanel';
 import GithubSettingsPanel from '@/components/admin/GithubSettingsPanel';
@@ -8,12 +9,13 @@ import MembersTable, {type MemberRow} from '@/components/admin/MembersTable';
 import NotificationPreferencesPanel from '@/components/settings/NotificationPreferencesPanel';
 import SettingsPreferences from '@/components/settings/SettingsPreferences';
 import {
+  getAgentRunsAction,
   getAgentsAction,
   getOpenRouterStatusAction
 } from '@/lib/actions/agents';
 import {getNotificationPreferencesAction} from '@/lib/actions/notifications';
 import {requireActiveMember} from '@/lib/auth';
-import type {Agent, OpenRouterStatus} from '@/lib/agents';
+import type {Agent, AgentRun, OpenRouterStatus} from '@/lib/agents';
 import type {GithubConnectionStatus} from '@/lib/github';
 import {createInsForgeServerClient} from '@/lib/insforge/server';
 
@@ -38,6 +40,7 @@ export default async function SettingsPage() {
   let githubStatus: GithubConnectionStatus | null = null;
   let openRouterStatus: OpenRouterStatus | null = null;
   let agents: Agent[] = [];
+  let runs: AgentRun[] = [];
 
   if (isAdmin) {
     const insforge = await createInsForgeServerClient();
@@ -48,9 +51,10 @@ export default async function SettingsPage() {
         .order('created_at', {ascending: true}),
       insforge.database.rpc('github_connection_status')
     ]);
-    [openRouterStatus, agents] = await Promise.all([
+    [openRouterStatus, agents, runs] = await Promise.all([
       getOpenRouterStatusAction(),
-      getAgentsAction()
+      getAgentsAction(),
+      getAgentRunsAction(25)
     ]);
 
     members = (memberRows ?? []) as unknown as MemberRow[];
@@ -111,6 +115,7 @@ export default async function SettingsPage() {
           <GithubSettingsPanel status={githubStatus} />
           <OpenRouterPanel status={openRouterStatus} />
           <AgentRosterPanel agents={agents} />
+          <AgentActivityPanel agents={agents} runs={runs} />
         </>
       ) : null}
     </section>

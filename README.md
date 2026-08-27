@@ -62,7 +62,9 @@ app/[locale]/      routes: /, /products, /tasks, /knowledge, /trends,
 components/        UI, grouped by feature (lifecycle/, governance/, products/, …)
 lib/               vocabulary + queries; lib/actions/* are Server Actions
 migrations/        every schema change, in order — the real data model
-functions/         Deno edge functions: trend-scan, github-sync
+functions/         Deno edge functions: trend-scan, github-sync, thread-agent,
+                   agent-tick, agent-runtime
+services/          the jcode operator runner — a container, not an edge function
 messages/{en,ar}/  one JSON file per namespace, both locales required
 i18n/              routing, navigation helpers, namespace registry
 ```
@@ -106,14 +108,39 @@ architectural.
 | [DEPLOY.md](DEPLOY.md) | Deployment, measured production latency, the planned region move |
 | [AGENTS.md](AGENTS.md) | InsForge conventions for coding agents |
 
+## Agent runtimes
+
+Agents answer on one of two runtimes, chosen per agent in Settings.
+
+| | `direct_openrouter` (default) | `jcode` |
+|---|---|---|
+| Where | `functions/thread-agent.ts`, one completion | a container running the [jcode](https://jcode.sh) harness |
+| Gets | the conversation, the product, its knowledge base | all of that plus a workspace, a terminal and minutes of wall clock |
+| Costs | fractions of a cent | dollars |
+| Can write | nothing | nothing |
+
+Both propose; neither commits. An operator agent reads a product's repository —
+unpacked from a signed archive, with no `.git` and no credential of any kind —
+and its output is a `repo_patch` proposal. A person approves it, and
+`github-sync` makes the commit under that person's own authority. That is
+[COLLABORATION.md](COLLABORATION.md)'s D2 extended to git.
+
+The harness reads `OPENROUTER_API_KEY`, so it runs on the same capped key,
+the same budget per agent and the same cost accounting as everything else.
+Setup is in [services/agent-runner/README.md](services/agent-runner/README.md).
+
 ## Current status
 
-Deployed and in use. Two items to be aware of before relying on the newest
+Deployed and in use. Three items to be aware of before relying on the newest
 feature set:
 
 - **GitHub mirroring is inert until a credential exists.** An admin must create a
   fine-grained PAT owned by the `code92-dev` organisation (Contents: read and
   write) and save it under Admin → GitHub.
+- **The jcode runtime is not live.** The schema, control plane, runner and
+  patch path are in the tree, but no agent uses them until the two harness
+  migrations are applied, the runner is deployed and one agent is deliberately
+  switched to it. Everything stays on the OpenRouter path until then.
 - **No automated security scan has run** against this schema — the InsForge
   advisor is unavailable on this project because `pg_stat_statements` is not
   installed. It reports "no issues" over an empty result set, which is not the

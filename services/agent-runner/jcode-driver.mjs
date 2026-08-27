@@ -113,6 +113,11 @@ async function handOverTree(root, uid, gid) {
 function createCollector() {
   const tools = new Map();
   const jobs = new Map();
+  // The bridge reports a refused model call, a bad credential or an exhausted
+  // budget as an `error` event and then ends the turn with no text. Discarding
+  // these turns "empty turn" — true, useless, and the reason a real cause takes
+  // an afternoon to find.
+  const errors = [];
   let usage = null;
 
   return {
@@ -132,6 +137,12 @@ function createCollector() {
           }
           break;
         }
+        case 'error':
+          errors.push(
+            [event.code, event.message].filter(Boolean).join(': ').slice(0, 500) ||
+              'unspecified error',
+          );
+          break;
         case 'token_usage':
           usage = {input: event.input, output: event.output, cacheReadInput: event.cache_read_input};
           break;
@@ -154,6 +165,7 @@ function createCollector() {
           failed ? {tool, calls, failed} : {tool, calls},
         ),
         jobs: [...jobs.values()],
+        errors,
         usage,
       };
     },
@@ -315,6 +327,7 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
       usage: result.usage ?? collected.usage,
       toolSummary: collected.toolSummary,
       jobs: collected.jobs,
+      errors: collected.errors,
     };
   } finally {
     // Stops the private instance and removes an ephemeral home. A stable home

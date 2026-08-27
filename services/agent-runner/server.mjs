@@ -205,7 +205,13 @@ async function executeRun(runId) {
     ]);
 
     if (typeof turn.output !== 'string' || !turn.output.trim()) {
-      throw new Error('jcode returned an empty turn');
+      // Say why, when the bridge said why. A turn ends empty for reasons the
+      // operator can act on — a rejected credential, an exhausted budget, a
+      // model that refused — and all of them arrive as error events.
+      const why = turn.errors?.length
+        ? `: ${turn.errors.join('; ')}`
+        : ' and reported no error (check the model slug and the OpenRouter key)';
+      throw new Error(`jcode returned an empty turn${why}`);
     }
 
     if (turn.jobs?.length) {

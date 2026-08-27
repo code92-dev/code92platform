@@ -402,3 +402,26 @@ test('ordinary variables and the model credential survive scrubbing', () => {
     'the model credential is granted explicitly and must not be blanked',
   );
 });
+
+// An empty turn with no explanation is the least actionable failure the runner
+// can produce, and the bridge almost always explains itself first.
+test('the collector keeps error events so an empty turn can say why', () => {
+  const collector = createCollector();
+  collector.observe({ev: 'error', code: 'model_error', message: 'insufficient credits'});
+  collector.observe({ev: 'error', code: 'auth', message: 'invalid api key'});
+  const {errors} = collector.result();
+  assert.deepEqual(errors, ['model_error: insufficient credits', 'auth: invalid api key']);
+});
+
+test('a clean turn collects no errors', () => {
+  const collector = createCollector();
+  collector.observe({ev: 'tool_start', name: 'read'});
+  collector.observe({ev: 'turn_done', session_id: 's1'});
+  assert.deepEqual(collector.result().errors, []);
+});
+
+test('an error event with no message still yields something printable', () => {
+  const collector = createCollector();
+  collector.observe({ev: 'error', code: '', message: ''});
+  assert.deepEqual(collector.result().errors, ['unspecified error']);
+});

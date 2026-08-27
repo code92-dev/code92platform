@@ -286,6 +286,42 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
     // See note 2. Only meaningful if the bridge issues prompts at all.
     const gatesPermissions = client.supports('permissions');
 
+    // Budgets, spent gracefully.
+    //
+    // Both of these used to end a run by killing it: the wall clock rejected the
+    // race in server.mjs and four minutes of tool work went in the bin with
+    // nothing to show the person who asked. A soft interrupt injects into the
+    // running turn instead, so the model stops working and answers with what it
+    // already found. An incomplete answer is worth more than a failed run.
+    //
+    // The hard timeout in server.mjs stays as the backstop for a harness that
+    // has stopped listening altogether.
+    const maxSteps = Number(claim.max_tool_steps) || 0;
+    const runSeconds = Number(claim.max_run_seconds) || 0;
+    let steps = 0;
+    let wrappedUp = false;
+
+    const wrapUp = (reason) => {
+      if (wrappedUp) return;
+      wrappedUp = true;
+      onProgress?.('executing', 'wrap_up', {reason});
+      void client
+        .softInterrupt(
+          sessionId,
+          `You have reached this run's ${reason === 'tool_budget' ? 'tool-call' : 'time'} ` +
+            'budget. Stop calling tools and reply now with what you have already ' +
+            'established, saying plainly what you did not get to.',
+          true,
+        )
+        .catch(() => {});
+    };
+
+    // Leave a quarter of the budget to actually compose the answer. Interrupting
+    // at the limit itself would land while the wall clock is already expiring.
+    const softDeadline = runSeconds
+      ? setTimeout(() => wrapUp('time_budget'), runSeconds * 750).unref()
+      : null;
+
     const result = await client.run(sessionId, `${claim.prompt}${workspaceBriefing(repoInfo)}`, {
       autoApprove: false,
       onEvent: (event) => {
@@ -306,7 +342,11 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
           return;
         }
         if (event.ev === 'tool_start') {
-          onProgress?.('executing', 'tool', {tool: event.name});
+          steps += 1;
+          onProgress?.('executing', 'tool', {tool: event.name, step: steps});
+          // max_tool_steps was stored, sent in the claim and then read by
+          // nothing, so a 12-step agent could take 19. This is where it binds.
+          if (maxSteps && steps >= maxSteps) wrapUp('tool_budget');
         }
         if (event.ev === 'background_progress') {
           onProgress?.('waiting', 'background', {
@@ -318,6 +358,7 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
       },
     });
 
+    if (softDeadline) clearTimeout(softDeadline);
     const collected = collector.result();
     return {
       output: result.text,

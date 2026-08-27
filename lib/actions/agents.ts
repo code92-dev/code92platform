@@ -198,7 +198,7 @@ export async function saveOpenRouterKeyAction(
     is_capped?: boolean;
   };
 
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {
     ok: true,
     lastFour: body.last_four ?? '····',
@@ -222,7 +222,7 @@ export async function testOpenRouterKeyAction(): Promise<AgentActionResult> {
   const failure = extractError(data, error);
   if (failure) return {ok: false, error: failure};
 
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 
@@ -239,7 +239,7 @@ export async function clearOpenRouterKeyAction(): Promise<AgentActionResult> {
   const failure = extractError(data, error);
   if (failure) return {ok: false, error: failure};
 
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 
@@ -297,8 +297,8 @@ export async function createAgentAction(
   const failure = extractError(data, error);
   if (failure) return {ok: false, error: failure};
 
-  revalidatePath('/settings');
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/settings', 'page');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -361,7 +361,7 @@ export async function updateAgentAction(
 
   if (error) return {ok: false, error: mapDatabaseError(error)};
 
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 
@@ -394,8 +394,8 @@ export async function archiveAgentAction(
 
   if (error) return {ok: false, error: mapDatabaseError(error)};
 
-  revalidatePath('/settings');
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/settings', 'page');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -450,12 +450,12 @@ export async function decideProposalAction(
   if (parsed.data.decision === 'approve') {
     const deferred = await applyApprovedPatch(insforge, parsed.data.proposalId);
     if (deferred) {
-      revalidatePath('/channels');
+      revalidatePath('/[locale]/channels/[id]', 'page');
       return deferred;
     }
   }
 
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -564,7 +564,7 @@ export async function createAgentScheduleAction(
 
   if (error) return {ok: false, error: mapDatabaseError(error)};
 
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 
@@ -584,7 +584,7 @@ export async function setAgentScheduleEnabledAction(
     .eq('id', scheduleId);
 
   if (error) return {ok: false, error: mapDatabaseError(error)};
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 
@@ -603,7 +603,7 @@ export async function deleteAgentScheduleAction(
     .eq('id', scheduleId);
 
   if (error) return {ok: false, error: mapDatabaseError(error)};
-  revalidatePath('/settings');
+  revalidatePath('/[locale]/settings', 'page');
   return {ok: true};
 }
 

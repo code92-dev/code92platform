@@ -147,7 +147,7 @@ export async function postMessageAction(
   const messageId = data?.[0]?.id as string | undefined;
   if (messageId) await pingQueuedAgentRuns(insforge, messageId);
 
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -243,8 +243,8 @@ export async function createChannelAction(
 
   if (error) return {ok: false, error: mapChannelError(error)};
 
-  revalidatePath('/channels');
-  if (bound) revalidatePath('/products');
+  revalidatePath('/[locale]/channels/[id]', 'page');
+  if (bound) revalidatePath('/[locale]/products', 'page');
   return {ok: true, channelId: data?.[0]?.id as string | undefined};
 }
 
@@ -358,8 +358,8 @@ export async function removeChannelAction(
     | {deleted?: boolean}
     | null;
 
-  revalidatePath('/channels');
-  revalidatePath('/products');
+  revalidatePath('/[locale]/channels/[id]', 'page');
+  revalidatePath('/[locale]/products', 'page');
   return {ok: true, deleted: row?.deleted === true};
 }
 
@@ -377,7 +377,7 @@ export async function joinChannelAction(
     .insert([{channel_id: channelId, user_id: caller.user.id}]);
 
   if (error) return {ok: false, error: error.message};
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -397,7 +397,7 @@ export async function leaveChannelAction(
     .eq('user_id', caller.user.id);
 
   if (error) return {ok: false, error: error.message};
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 
@@ -423,7 +423,7 @@ export async function setChannelNotificationLevelAction(
     .eq('user_id', caller.user.id);
 
   if (error) return {ok: false, error: error.message};
-  revalidatePath('/channels');
+  revalidatePath('/[locale]/channels/[id]', 'page');
   return {ok: true};
 }
 

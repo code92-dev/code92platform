@@ -32,6 +32,10 @@ export type MessageAuthor = {
   display_name: string;
   kind: 'human' | 'agent';
   handle: string | null;
+  // Whether an @ actually reaches this author. Separate from the list itself
+  // because an archived agent must keep rendering its past messages under its
+  // own name — dropping it from `authors` would relabel the history it wrote.
+  mentionable: boolean;
 };
 
 export default function MessageStream({
@@ -76,6 +80,7 @@ export default function MessageStream({
   // Everyone who can actually be reached with an @. Members whose name yields no
   // usable token are left out rather than offered and silently ignored.
   const mentionable = authors
+    .filter((a) => a.mentionable)
     .map((a) => ({author: a, token: mentionToken(a)}))
     .filter((c): c is {author: MessageAuthor; token: string} => c.token !== null);
 

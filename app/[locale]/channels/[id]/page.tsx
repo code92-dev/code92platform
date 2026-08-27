@@ -25,16 +25,28 @@ export default async function ChannelPage({
   // Everyone who appears in this channel — humans for their names, agents for
   // their handles. One query rather than a lookup per message.
   const insforge = await createInsForgeServerClient();
+  // Everyone, including archived agents and deactivated members: this list also
+  // resolves the author of every historical message, and a name that stops
+  // resolving turns their past messages into "unknown".
+  //
+  // Who can be *reached* is a narrower question, answered by `mentionable`.
+  // messages_queue_agent_runs() wakes an agent only when it is enabled and not
+  // archived, so offering any other agent in autocomplete inserts a mention
+  // that silently resolves to nobody.
   const [{data: members}, {data: agents}] = await Promise.all([
-    insforge.database.from('team_members').select('user_id, display_name, kind'),
-    insforge.database.from('agents').select('user_id, handle')
+    insforge.database.from('team_members').select('user_id, display_name, kind, is_active'),
+    insforge.database.from('agents').select('user_id, handle, enabled, archived_at')
   ]);
 
-  const handleByUser = new Map(
-    ((agents ?? []) as Array<{user_id: string; handle: string}>).map((a) => [
-      a.user_id,
-      a.handle
-    ])
+  const agentByUser = new Map(
+    (
+      (agents ?? []) as Array<{
+        user_id: string;
+        handle: string;
+        enabled: boolean;
+        archived_at: string | null;
+      }>
+    ).map((a) => [a.user_id, a])
   );
 
   const authors: MessageAuthor[] = (
@@ -42,13 +54,20 @@ export default async function ChannelPage({
       user_id: string;
       display_name: string;
       kind: 'human' | 'agent';
+      is_active: boolean;
     }>
-  ).map((m) => ({
-    user_id: m.user_id,
-    display_name: m.display_name,
-    kind: m.kind,
-    handle: handleByUser.get(m.user_id) ?? null
-  }));
+  ).map((m) => {
+    const agent = agentByUser.get(m.user_id);
+    return {
+      user_id: m.user_id,
+      display_name: m.display_name,
+      kind: m.kind,
+      handle: agent?.handle ?? null,
+      mentionable: agent
+        ? m.is_active && agent.enabled && agent.archived_at === null
+        : m.is_active
+    };
+  });
 
   const isProduct = view.channel.kind === 'product';
   const isDm = view.channel.kind === 'dm';

@@ -116,7 +116,16 @@ docker compose up -d
 docker compose logs -f runner     # expect "polling every 5s"
 ```
 
-Then, on the platform side, set the InsForge secrets:
+### On your workstation, not the runner host
+
+Everything in this section talks to InsForge and belongs on the machine where
+you develop — the one already logged into the CLI. The runner host needs none
+of it: it holds no InsForge key, authenticates with `AGENT_RUNNER_SECRET`
+alone, and never calls the CLI. Logging the CLI in over a headless SSH session
+cannot work anyway, because its OAuth redirect targets a loopback port on the
+box running the browser.
+
+Set the InsForge secrets:
 
 | Secret | Value |
 | --- | --- |

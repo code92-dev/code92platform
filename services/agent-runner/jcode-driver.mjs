@@ -254,6 +254,12 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
       LANG: 'C.UTF-8',
     },
     startupTimeoutMs: 30_000,
+    // Forward the daemon's stderr to the container log. When the bridge dies
+    // mid-run the SDK reports only "harness connection closed" — the socket is
+    // gone, and it never knew why. The reason is on the daemon's stderr, which
+    // is otherwise piped into a buffer that is only read on a startup failure.
+    // Noisy by design: a crash we cannot explain costs more than the noise.
+    inheritStderr: true,
   });
 
   const collector = createCollector();

@@ -54,7 +54,10 @@ export default async function SettingsPage() {
     [openRouterStatus, agents, runs] = await Promise.all([
       getOpenRouterStatusAction(),
       getAgentsAction(),
-      getAgentRunsAction(25)
+      // The last few runs only. This panel answers "is the harness alive and
+      // what did the last run cost", not "what has it ever done" — and the
+      // limit is passed to the query so the rows are never fetched and hidden.
+      getAgentRunsAction(5)
     ]);
 
     members = (memberRows ?? []) as unknown as MemberRow[];

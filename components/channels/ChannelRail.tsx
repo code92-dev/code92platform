@@ -32,16 +32,27 @@ export default function ChannelRail({
   channels,
   peers,
   viewerId,
-  locale
+  locale,
+  defaultChannelId
 }: {
   channels: Channel[];
   peers: DmPeer[];
   viewerId: string;
   locale: string;
+  // The channel /channels renders when no id is in the path. Needed here
+  // because that route shows General without the URL naming it, so an exact
+  // pathname match would leave nothing highlighted.
+  defaultChannelId: string | null;
 }) {
   const t = useTranslations('channels');
   const router = useRouter();
   const pathname = usePathname();
+
+  // Both spellings of "this channel is open": /channels/<id>, and bare
+  // /channels when this is the one that route renders.
+  const isActive = (channelId: string) =>
+    pathname === `/channels/${channelId}` ||
+    (pathname === '/channels' && channelId === defaultChannelId);
 
   // undefined: not adding. null: adding a top-level channel. string: adding
   // under that channel id.
@@ -154,9 +165,12 @@ export default function ChannelRail({
         return;
       }
       setNotice(result.deleted ? 'deleted' : 'archived');
-      // Standing in a room that has just gone is a dead end.
-      if (pathname === `/channels/${channel.id}`) router.push('/channels');
-      else router.refresh();
+      // Standing in a room that has just gone is a dead end. When it was being
+      // shown at bare /channels there is nowhere to push to, so re-render in
+      // place and let that route fall through to the next default.
+      if (!isActive(channel.id)) router.refresh();
+      else if (pathname === '/channels') router.refresh();
+      else router.push('/channels');
     });
   }
 
@@ -201,7 +215,7 @@ export default function ChannelRail({
   // no x (removing it is refused for both people), so it would be a row of
   // controls that only ever say no.
   function DmRow({channel}: {channel: Channel}) {
-    const active = pathname === `/channels/${channel.id}`;
+    const active = isActive(channel.id);
     return (
       <li>
         <Link
@@ -221,7 +235,7 @@ export default function ChannelRail({
 
   function Row({channel, depth}: {channel: Channel; depth: number}) {
     const children = (byParent.get(channel.id) ?? []).slice().sort(order);
-    const active = pathname === `/channels/${channel.id}`;
+    const active = isActive(channel.id);
     const indent = Math.min(depth * INDENT_STEP, MAX_INDENT);
 
     return (

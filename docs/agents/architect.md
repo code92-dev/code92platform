@@ -4,8 +4,8 @@ A roster entry, not code. Create it from **Settings → Agents → New agent** a
 the system prompt below verbatim.
 
 The prompt deliberately says nothing about identity, the propose-only rule, or the
-JSON output shape. `buildSystemPrompt()` in `functions/thread-agent.ts:598` and
-`functions/agent-runtime.ts:279` append all three to whatever is stored here, and a
+JSON output shape. `buildSystemPrompt()` in `functions/thread-agent.ts` and
+`functions/agent-runtime.ts` append all three to whatever is stored here, and a
 second, differently-worded copy of the protocol is how a model ends up following the
 weaker one. What is stored here is the judgment: who this agent is, how it reads,
 how it decides, and what it refuses to do.

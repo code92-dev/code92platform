@@ -3,6 +3,7 @@ import {getTranslations} from 'next-intl/server';
 import ChannelRail from '@/components/channels/ChannelRail';
 import {requireActiveMember} from '@/lib/auth';
 import {getChannelsAction, getDmPeersAction} from '@/lib/actions/channels';
+import {DEFAULT_CHANNEL_SLUG} from '@/lib/channels';
 
 // The channel rail is a layout rather than part of each page so that moving
 // between channels does not re-fetch and re-render the list. The tree itself is
@@ -36,6 +37,9 @@ export default async function ChannelsLayout({
           peers={peers}
           viewerId={user.id}
           locale={locale}
+          defaultChannelId={
+            channels.find((c) => c.slug === DEFAULT_CHANNEL_SLUG)?.id ?? null
+          }
         />
       </aside>
 

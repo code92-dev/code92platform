@@ -17,7 +17,11 @@
     "send": "Send",
     "sending": "Sending…",
     "mentionHint": "Mentioning an agent will ask it to reply.",
-    "mentionListLabel": "People and agents you can mention"
+    "mentionListLabel": "People and agents you can mention",
+    "attach": "Attach files",
+    "attachHint": "Attached files are saved to the knowledge base.",
+    "removeFile": "Remove this file",
+    "uploading": "Uploading…"
   },
   "message": {
     "edited": "edited",
@@ -28,7 +32,9 @@
     "becameTask": "Became a work item",
     "becameStatus": "Became a status update",
     "becameNote": "Became a knowledge note",
-    "becamePhase": "Advanced a lifecycle phase"
+    "becamePhase": "Advanced a lifecycle phase",
+    "delete": "Delete",
+    "confirmDelete": "Delete this message? It will show as removed and its replies stay."
   },
   "channel": {
     "topic": "Topic",
@@ -76,7 +82,10 @@
     "dm_no_children": "A direct message cannot have subchannels.",
     "dm_self": "Pick someone other than yourself.",
     "dm_not_person": "Direct messages are between people. Mention an agent by its handle in a channel instead.",
-    "dm_inactive": "That person is not an active member."
+    "dm_inactive": "That person is not an active member.",
+    "attachFailed": "The message was sent, but the files could not be attached.",
+    "deleteFailed": "That message could not be deleted.",
+    "tooManyFiles": "At most {count} files at a time."
   },
   "remove": {
     "label": "Remove this channel",
@@ -84,5 +93,10 @@
     "confirm": "Remove {name}? If it has no messages it is deleted. If it holds any, it is archived instead and its messages and proposals are kept. Anything nested inside follows the same rule.",
     "deleted": "Channel deleted — it was empty.",
     "archived": "Channel archived. Its messages were kept."
+  },
+  "attachments": {
+    "opening": "Opening…",
+    "inKnowledge": "In knowledge",
+    "openFailed": "That file could not be opened. Try again."
   }
 }

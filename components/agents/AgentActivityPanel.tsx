@@ -69,7 +69,12 @@ export default async function AgentActivityPanel({
                     <span dir="ltr" className="font-mono">
                       {agent ? `@${agent.handle}` : t('runs.unknownAgent')}
                     </span>
-                    <span className="ms-2 text-[11px] text-faint">
+                    {/* A real separator, not just the margin below. `ms-2` is
+                        CSS, so it is invisible to copy-paste and to a screen
+                        reader: the two spans ran together as
+                        "@system_architectjcode harness". */}
+                    <span className="mx-2 text-[11px] text-faint">·</span>
+                    <span className="text-[11px] text-faint">
                       {t(`runtimes.${run.runtime}`)}
                     </span>
                   </p>

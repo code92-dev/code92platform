@@ -504,6 +504,27 @@ async function applyApprovedPatch(
   return null;
 }
 
+// A transient GitHub or network failure must not make an approved patch
+// permanently unrecoverable. The original approver is re-checked by both
+// github-sync and record_agent_proposal_commit, so retrying cannot turn this
+// button into a second approval path.
+const retryPatchSchema = z.object({proposalId: uuid});
+
+export async function retryApprovedPatchAction(
+  input: z.infer<typeof retryPatchSchema>
+): Promise<AgentActionResult> {
+  const caller = await requireActiveCaller();
+  if (!caller) return {ok: false, error: 'forbidden'};
+
+  const parsed = retryPatchSchema.safeParse(input);
+  if (!parsed.success) return {ok: false, error: 'invalid'};
+
+  const insforge = await createInsForgeServerClient();
+  const result = await applyApprovedPatch(insforge, parsed.data.proposalId);
+  revalidatePath('/[locale]/channels/[id]', 'page');
+  return result ?? {ok: true};
+}
+
 export async function getProposalsForChannelAction(
   channelId: string
 ): Promise<AgentProposal[]> {

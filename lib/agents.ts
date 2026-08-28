@@ -17,12 +17,39 @@ export const PROPOSAL_ACTIONS = [
 ] as const;
 export type ProposalAction = (typeof PROPOSAL_ACTIONS)[number];
 
+// Actions an agent may be trusted to perform without a human approving them.
+//
+// A strict subset of PROPOSAL_ACTIONS, and the two omissions are the point.
+// lifecycle_advance can require a waiver, and a waiver is a person accepting
+// responsibility — there is nobody to accept it when nobody is asked.
+// repo_patch commits to a repository under the org PAT. Both stay
+// propose-only however an agent is configured, which the CHECK on
+// agents.autonomous_actions enforces rather than this constant.
+//
+// Mirrors migrations/20260827110000_add-autonomous-agent-actions.sql.
+export const AUTONOMOUS_ACTIONS = [
+  'knowledge_note',
+  'task_create',
+  'task_update',
+  'status_update'
+] as const;
+export type AutonomousAction = (typeof AUTONOMOUS_ACTIONS)[number];
+
+export function canRunUnattended(action: string): action is AutonomousAction {
+  return (AUTONOMOUS_ACTIONS as readonly string[]).includes(action);
+}
+
 export const PROPOSAL_STATUSES = [
   'pending',
   'approved',
   'rejected',
   'superseded',
-  'expired'
+  'expired',
+  // Performed by the agent with no human decision, because the operator put
+  // this action in the agent's autonomous_actions. A distinct status rather
+  // than 'approved' with a null decider: "approved by nobody" is the kind of
+  // record that reads as a bug months later.
+  'auto_applied'
 ] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
 
@@ -111,6 +138,9 @@ export type Agent = {
   // exactly as stored.
   model: string;
   allowed_actions: ProposalAction[];
+  // A subset of allowed_actions, enforced by CHECK: these run the moment the
+  // agent proposes them, with no approval card to click.
+  autonomous_actions: AutonomousAction[];
   temperature: number;
   max_output_tokens: number;
   enabled: boolean;

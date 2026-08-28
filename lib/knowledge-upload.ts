@@ -51,6 +51,48 @@ export async function uploadKnowledgeFile(file: File): Promise<StoredFile> {
   };
 }
 
+// Files attached in a channel go into this same bucket, under their own prefix.
+//
+// The same bucket, deliberately: a channel attachment becomes a knowledge source
+// row, and the signed-URL reader that already serves knowledge sources has to be
+// able to read it. A second bucket would mean a second read path for a row that
+// is not otherwise different.
+export async function uploadMessageAttachments(
+  files: File[]
+): Promise<StoredFile[]> {
+  const uploaded: StoredFile[] = [];
+  try {
+    for (const file of files) {
+      const invalid = validateKnowledgeFile(file);
+      if (invalid) throw new Error(invalid);
+
+      const path = `channels/${safeFileName(file.name)}`;
+      const {data, error} = await insforge.storage
+        .from(KNOWLEDGE_FILE_BUCKET)
+        .upload(path, file);
+      if (error || !data) throw new Error('uploadFailed');
+
+      uploaded.push({
+        url: data.url,
+        key: data.key,
+        fileName: file.name,
+        mimeType: storedFileType(file, data.mimeType),
+        sizeBytes: data.size || file.size
+      });
+    }
+    return uploaded;
+  } catch (error) {
+    // No row references these yet, so an abandoned object is pure litter.
+    // Best effort: a failed cleanup must not mask the real error.
+    await Promise.allSettled(
+      uploaded.map((stored) =>
+        insforge.storage.from(KNOWLEDGE_FILE_BUCKET).remove(stored.key)
+      )
+    );
+    throw error;
+  }
+}
+
 // Best-effort cleanup of an object the database never ended up referencing.
 export async function removeKnowledgeFile(key: string) {
   await Promise.allSettled([

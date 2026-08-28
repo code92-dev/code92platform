@@ -21,8 +21,8 @@ services:
     #      longer ignore file permissions. As root the runner cannot write into
     #      a directory owned by agent, and every run dies with EACCES on mkdir.
     #   2. jcode's launch() takes no uid, so the harness runs as whatever user
-    #      this process is. Root here would mean the model's bash tool runs as
-    #      root. This line is what actually drops that privilege.
+    #      this process is. Keeping that user unprivileged limits filesystem
+    #      impact if a structured tool ever regresses.
     user: "10001:10001"
 
     env_file: .env
@@ -38,8 +38,8 @@ services:
     # and from the host over the compose network; publishing it would put a
     # bearer-secret endpoint on the public internet for no gain.
 
-    # The harness runs untrusted model output with a terminal. These are the
-    # bounds that hold when the tool allow-list does not.
+    # The harness runs untrusted model output with structured file tools only.
+    # These container bounds remain defence in depth around that allow-list.
     security_opt:
       - no-new-privileges:true
     cap_drop:

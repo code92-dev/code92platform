@@ -23,6 +23,16 @@ export type PromotionType = (typeof PROMOTION_TYPES)[number];
 export const MESSAGE_PAGE_SIZE = 60;
 export const MAX_MESSAGE_LENGTH = 20000;
 
+// The channel /channels lands on when no channel is named. Seeded by
+// 20260825090000_add-channels.sql; the slug is UNIQUE, so this identifies
+// exactly one row.
+export const DEFAULT_CHANNEL_SLUG = 'general';
+
+// Attaching files to a message. Same ceilings as every other upload surface —
+// mirrored in attach_files_to_message(), which is what actually enforces them.
+export const MAX_MESSAGE_ATTACHMENTS = 8;
+export const MAX_MESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 export type Channel = {
   id: string;
   slug: string;
@@ -63,6 +73,22 @@ export type Message = {
   promoted_to_id: string | null;
   edited_at: string | null;
   deleted_at: string | null;
+  created_at: string;
+};
+
+// A file attached to a message. This is a knowledge_items row, not a copy of
+// one: a channel attachment IS a knowledge source that arrived through a
+// conversation, so there is one record and one object in storage. `id` is the
+// knowledge item's id and links straight to its page.
+export type MessageAttachment = {
+  id: string;
+  source_message_id: string;
+  title: string;
+  file_name: string;
+  file_key: string;
+  mime_type: string;
+  size_bytes: number;
+  status: string;
   created_at: string;
 };
 

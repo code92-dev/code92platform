@@ -1,18 +1,8 @@
 # The jcode operator runner.
 #
-# On credential containment, stated as it actually is rather than as intended.
-# The SDK's launch() takes no uid and spawns the bridge with
-# {...process.env, ...options.env}, so jcode runs as THIS process's user with
-# THIS process's environment. There is no root/agent split at the process level,
-# and the `agent` account below only owns files.
-#
-# What keeps AGENT_RUNNER_SECRET away from the harness is therefore the explicit
-# scrub in jcode-driver.mjs (scrubbedHostEnv), which blanks every sensitive name
-# in the env handed to launch(). That is a single function, so it is covered by
-# tests that fail loudly if it stops working — do not remove them.
-#
-# If jcode ever gains a uid option, run it as `agent` and treat the scrub as
-# defence in depth rather than the only wall.
+# The SDK's launch() runs the bridge in this container, so the harness receives
+# only the structured file tools and an explicitly scrubbed environment. It has
+# no shell or network tool with which to turn process state into exfiltration.
 FROM node:22-bookworm-slim
 
 # git is here for M14c, which materialises a shallow repo into the workspace.
@@ -33,7 +23,7 @@ RUN npm ci --omit=dev
 
 COPY server.mjs jcode-driver.mjs platform-mcp.mjs workspace.mjs ./
 
-# The unprivileged account the harness itself runs under.
+# The account used by the service and its structured workspace.
 RUN useradd --system --create-home --uid 10001 --user-group agent \
  && mkdir -p /var/lib/code92-agent-runner \
  && chown -R agent:agent /var/lib/code92-agent-runner

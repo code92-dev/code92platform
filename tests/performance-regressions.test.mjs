@@ -57,3 +57,20 @@ test('product detail starts auth, translations, and product lookup together', as
   assert.match(dataWave, /from\('release_overview'\)/);
   assert.equal((dataWave.match(/await Promise\.all\(\[/g) ?? []).length, 1);
 });
+
+test('channel attachment hydration is bounded to the visible message page', async () => {
+  const source = await read('lib/actions/channels.ts');
+  const queryStart = source.indexOf(".from('knowledge_items')");
+  const queryEnd = source.indexOf("return {", queryStart);
+  const query = source.slice(queryStart, queryEnd);
+
+  assert.match(query, /\.in\('source_message_id', messageIds\)/);
+  assert.match(query, /\.limit\(messageIds\.length \* MAX_MESSAGE_ATTACHMENTS\)/);
+});
+
+test('agent product knowledge lookup caps link identifiers before the IN query', async () => {
+  const source = await read('functions/agent-runtime.ts');
+  const queryStart = source.lastIndexOf("from('knowledge_item_products')");
+  const queryEnd = source.indexOf('const ids', queryStart);
+  assert.match(source.slice(queryStart, queryEnd), /\.limit\(500\)/);
+});

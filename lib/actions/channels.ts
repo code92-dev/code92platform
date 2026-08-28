@@ -6,17 +6,21 @@ import {z} from 'zod';
 import {getOwnMembership, getSessionUser} from '@/lib/auth';
 import {createInsForgeServerClient} from '@/lib/insforge/server';
 import {
+  MAX_MESSAGE_ATTACHMENTS,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
   MAX_MESSAGE_LENGTH,
   MESSAGE_PAGE_SIZE,
   NOTIFICATION_LEVELS,
   toChannelSlug,
   type Channel,
-  type Message
+  type Message,
+  type MessageAttachment
 } from '@/lib/channels';
+import {isAllowedAttachmentType} from '@/lib/attachments';
 import type {AgentProposal} from '@/lib/agents';
 
 export type ChannelActionResult =
-  | {ok: true; channelId?: string}
+  | {ok: true; channelId?: string; messageId?: string}
   | {ok: false; error: string};
 
 const uuid = z.string().uuid();
@@ -34,6 +38,10 @@ const CHANNEL_COLUMNS =
   'id, slug, name, name_ar, topic, kind, product_id, is_primary, parent_id, dm_user_a, dm_user_b, archived_at, created_by, created_at';
 const MESSAGE_COLUMNS =
   'id, channel_id, parent_id, author_id, body, kind, promoted_to_type, promoted_to_id, edited_at, deleted_at, created_at';
+// A channel attachment is a knowledge_items row with origin='channel'. Only the
+// columns the message bubble renders — content and url are never set on one.
+const ATTACHMENT_COLUMNS =
+  'id, source_message_id, title, file_name, file_key, mime_type, size_bytes, status, created_at';
 const PROPOSAL_COLUMNS =
   'id, message_id, channel_id, agent_id, run_id, product_id, action, payload, reasoning, status, decided_by, decided_at, decision_note, result_type, result_id, created_at';
 
@@ -56,6 +64,7 @@ export type ChannelView = {
   channel: Channel | null;
   messages: Message[];
   proposals: AgentProposal[];
+  attachments: MessageAttachment[];
   membership: {notification_level: string; last_read_at: string} | null;
 };
 
@@ -70,6 +79,7 @@ export async function getChannelViewAction(
     channel: null,
     messages: [],
     proposals: [],
+    attachments: [],
     membership: null
   };
   if (!caller || !uuid.safeParse(channelId).success) return empty;
@@ -103,12 +113,30 @@ export async function getChannelViewAction(
         .limit(1)
     ]);
 
+  // Fetched newest-first so the LIMIT takes the most recent page, then
+  // reversed for display: a chat reads oldest at the top.
+  const page = ((messages ?? []) as unknown as Message[]).slice().reverse();
+
+  // A second round trip rather than part of the batch above, because it needs
+  // the ids the batch returns. knowledge_items carries no channel_id — an
+  // attachment is bound to its message, not to the room — so the page of
+  // messages is what scopes this. Skipped entirely for an empty channel.
+  const messageIds = page.map((message) => message.id);
+  const {data: attachments} = messageIds.length
+    ? await insforge.database
+        .from('knowledge_items')
+        .select(ATTACHMENT_COLUMNS)
+        .in('source_message_id', messageIds)
+        .is('archived_at', null)
+        .order('created_at', {ascending: true})
+        .limit(messageIds.length * MAX_MESSAGE_ATTACHMENTS)
+    : {data: []};
+
   return {
     channel: ((channels ?? [])[0] ?? null) as unknown as Channel | null,
-    // Fetched newest-first so the LIMIT takes the most recent page, then
-    // reversed for display: a chat reads oldest at the top.
-    messages: ((messages ?? []) as unknown as Message[]).slice().reverse(),
+    messages: page,
     proposals: (proposals ?? []) as unknown as AgentProposal[],
+    attachments: (attachments ?? []) as unknown as MessageAttachment[],
     membership: ((membership ?? [])[0] ?? null) as ChannelView['membership']
   };
 }
@@ -148,6 +176,109 @@ export async function postMessageAction(
   if (messageId) await pingQueuedAgentRuns(insforge, messageId);
 
   revalidatePath('/[locale]/channels/[id]', 'page');
+  // Returned so the composer can attach files to the message it just posted.
+  // Attachments cannot ride along with the insert: they are knowledge_items
+  // rows that have to name a message id that does not exist until now.
+  return {ok: true, messageId};
+}
+
+const deleteMessageSchema = z.object({messageId: uuid});
+
+// Soft delete, because the schema is built for it: messages.deleted_at exists so
+// replies beneath a removed message keep their parent and the record of who said
+// what survives. There is no DELETE grant on the table at all — deleted_at is
+// the only removal path, and the stream renders a tombstone in its place.
+//
+// Authorship is enforced by RLS ("author edits own message", which also pins
+// kind='human'), so a member cannot delete someone else's message or erase an
+// agent's reply by calling this with a borrowed id. The check below is the same
+// answer arrived at early, so the caller gets 'forbidden' rather than a silent
+// no-op.
+export async function deleteMessageAction(
+  input: z.infer<typeof deleteMessageSchema>
+): Promise<ChannelActionResult> {
+  const caller = await requireActiveCaller();
+  if (!caller) return {ok: false, error: 'forbidden'};
+
+  const parsed = deleteMessageSchema.safeParse(input);
+  if (!parsed.success) return {ok: false, error: 'invalid'};
+
+  const insforge = await createInsForgeServerClient();
+  const {data, error} = await insforge.database
+    .from('messages')
+    .update({deleted_at: new Date().toISOString()})
+    .eq('id', parsed.data.messageId)
+    .eq('author_id', caller.user.id)
+    .is('deleted_at', null)
+    .select('id');
+
+  if (error) return {ok: false, error: error.message};
+  // No rows means the message is not this member's, or was already deleted.
+  // Both are 'forbidden' from here; distinguishing them would tell a caller
+  // whether a message id they do not own exists.
+  if (!data?.length) return {ok: false, error: 'forbidden'};
+
+  revalidatePath('/[locale]/channels/[id]', 'page');
+  return {ok: true};
+}
+
+const attachmentSchema = z.object({
+  url: z.string().url().max(2000),
+  key: z.string().trim().min(1).max(1000),
+  fileName: z.string().trim().min(1).max(255),
+  mimeType: z
+    .string()
+    .max(255)
+    .refine(isAllowedAttachmentType, {message: 'unsupported file type'}),
+  sizeBytes: z.number().int().positive().max(MAX_MESSAGE_ATTACHMENT_BYTES)
+});
+
+const attachSchema = z.object({
+  messageId: uuid,
+  files: z.array(attachmentSchema).min(1).max(MAX_MESSAGE_ATTACHMENTS)
+});
+
+// Files attached in a channel are stored in the knowledge base, which is the
+// whole point rather than a side effect: there is no separate attachments table,
+// and the knowledge item IS the attachment.
+//
+// Routed through the attach_files_to_message RPC rather than inserted here.
+// origin and source_message_id are outside the column-level INSERT grant on
+// knowledge_items — deliberately, for the same reason the lifecycle mirror keeps
+// them out — so a client that could set them could forge an item claiming to
+// have come from a conversation it was never in. The function derives both from
+// the message id, and re-checks the author and the file type against what it
+// was handed rather than trusting either.
+export async function attachFilesToMessageAction(
+  input: z.infer<typeof attachSchema>
+): Promise<ChannelActionResult> {
+  const caller = await requireActiveCaller();
+  if (!caller) return {ok: false, error: 'forbidden'};
+
+  const parsed = attachSchema.safeParse(input);
+  if (!parsed.success) return {ok: false, error: 'invalid'};
+
+  const insforge = await createInsForgeServerClient();
+  const {error} = await insforge.database.rpc('attach_files_to_message', {
+    p_message_id: parsed.data.messageId,
+    // snake_case because the function reads these keys straight out of the
+    // JSON, and the payload it stores is the row.
+    p_files: parsed.data.files.map((file) => ({
+      file_url: file.url,
+      file_key: file.key,
+      file_name: file.fileName,
+      mime_type: file.mimeType,
+      size_bytes: file.sizeBytes
+    }))
+  });
+
+  // The RPC raises for every refusal — not a member, not the author, deleted
+  // message, unsupported type. Its message is more accurate than anything this
+  // layer could infer.
+  if (error) return {ok: false, error: error.message};
+
+  revalidatePath('/[locale]/channels/[id]', 'page');
+  revalidatePath('/[locale]/knowledge', 'page');
   return {ok: true};
 }
 

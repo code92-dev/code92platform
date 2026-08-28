@@ -19,10 +19,10 @@ conversational agents have had since M13c, unchanged by adding a harness.
 
 ### Trust boundary inside the container
 
-The HTTP control plane runs as **root** and holds `AGENT_RUNNER_SECRET`. jcode
-runs as the unprivileged **`agent`** user, which cannot read root's environment.
-Without that split the harness's own `bash` tool could read the secret that
-authenticates the runner to the platform.
+The HTTP control plane and jcode run in the same container, but jcode receives
+no shell or runner credential. The structured file tools are intentionally
+limited to the materialised workspace; without a shell the model cannot turn
+the process environment or network stack into an exfiltration API.
 
 The OpenRouter key is necessarily reachable by jcode during an active run. It is
 fetched from `openrouter_connection` for one claimed run and passed as an
@@ -33,9 +33,10 @@ that is the entire point of this runtime choosing a harness that reads
 
 ### Tools
 
-The operator profile gets `read`, `write`, `edit`, `apply_patch`, `bash`,
-`grep`, `glob`, `ls` — an explicit allow-list, not a named profile, so a jcode
-release cannot widen the sandbox. `web_search`, `web_fetch`, `browser`,
+The operator profile gets `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`,
+`ls` — an explicit allow-list, not a named profile, so a jcode release cannot
+widen the sandbox. It does not get a shell: repository changes use structured
+file tools and become proposals. `web_search`, `web_fetch`, `browser`,
 `integration` and `swarm` are denied outright: an agent that has read a private
 repository must not also hold the means to post it somewhere. Research agents
 stay on the OpenRouter runtime, where there is no workspace to exfiltrate.
@@ -161,17 +162,16 @@ sudo iptables -A DOCKER-USER -j DROP
 
 Treat that as the shape rather than the recipe — SNI matching is brittle and an
 egress proxy such as Squid with an allow-list is the sturdier version. The
-important property is that the harness runs untrusted model output with a
-terminal, next to a private repository, and should not be able to reach a host
-nobody chose.
+important property is that the harness runs untrusted model output next to a
+private repository with structured file tools only, and should not be able to
+reach a host nobody chose.
 
 ### Without Docker
 
 `node server.mjs` under systemd works the same way. Run it as a dedicated
-unprivileged user, set `JCODE_DATA_DIR` somewhere that user owns, and note that
-the root/`agent` split described above only applies inside the image — under
-systemd the harness runs as whatever user the unit does, so `AGENT_RUNNER_SECRET`
-is readable by the harness's own `bash` tool. Prefer the container.
+unprivileged user, set `JCODE_DATA_DIR` somewhere that user owns, and prefer
+the container for filesystem and egress policy. The harness still receives no
+shell, and sensitive environment names are scrubbed before the bridge starts.
 
 Never scale this to zero and never let the host sleep. A claimed run holds a
 five-minute lease that its runner renews; a machine that vanishes mid-run leaves

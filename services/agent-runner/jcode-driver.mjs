@@ -21,12 +21,9 @@
 //   3. `TurnResult.usage` carries tokens but no price. Cost is reconciled by
 //      the control plane against OpenRouter's own key ledger.
 //   4. `launch()` spawns the bridge with `{...process.env, ...options.env}` and
-//      offers no uid/gid, so jcode runs as this process's user and inherits
-//      this process's environment. AGENT_RUNNER_SECRET lives in that
-//      environment and an operator agent has `bash` — so the model could read
-//      the credential that authenticates the runner to the platform. Since
-//      `options.env` is spread last, scrubbing there is the one hook that
-//      works; see scrubbedHostEnv().
+//      offers no uid/gid. Since the operator has no shell, the control plane
+//      credential is scrubbed as defence in depth while structured file tools
+//      remain the only workspace capability; see scrubbedHostEnv().
 import {JcodeClient} from '@1jehuang/jcode-sdk';
 import {chown, mkdir, readdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -36,10 +33,14 @@ import {join} from 'node:path';
 // harness that quietly grows a capability inside someone else's sandbox is
 // the failure mode this whole runtime is arranged to prevent.
 //
-// Note what is absent. No network fetch tool: an agent that has read a private
-// repo must not also hold the means to post it somewhere. Web research stays
-// on the OpenRouter runtime, where the agent has no workspace.
-const OPERATOR_TOOLS = ['read', 'write', 'edit', 'apply_patch', 'bash', 'grep', 'glob', 'ls'];
+// Note what is absent. No shell or network fetch tool: an agent that has read a
+// private repo must not also hold the means to post it somewhere. Web research
+// stays on the OpenRouter runtime, where the agent has no workspace.
+// There is deliberately no shell. The runner still materialises private source
+// and carries the model credential; giving an untrusted turn `bash` would make
+// `/proc`, the network stack and every mounted workspace an exfiltration API.
+// Repository changes use the structured file tools and become proposals.
+const OPERATOR_TOOLS = ['read', 'write', 'edit', 'apply_patch', 'grep', 'glob', 'ls'];
 
 // Never available, whatever the profile resolves to. Belt and braces against
 // the allow-list being interpreted more loosely than intended by a future

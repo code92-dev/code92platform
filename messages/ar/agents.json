@@ -71,7 +71,9 @@
     "patchFiles": "{count, plural, zero {لا ملفات} one {ملف واحد} two {ملفان} few {# ملفات} many {# ملفًا} other {# ملف}}",
     "committed": "تم الإيداع بالمُعرّف {sha}.",
     "commitPending": "تمت الموافقة، ولم يتم الإيداع بعد.",
-    "commitFailedWith": "تمت الموافقة، لكن الإيداع أخفق: {reason}"
+    "commitFailedWith": "تمت الموافقة، لكن الإيداع أخفق: {reason}",
+    "retryCommit": "إعادة محاولة الإيداع",
+    "retryingCommit": "جارٍ إعادة المحاولة…"
   },
   "openrouter": {
     "title": "OpenRouter",

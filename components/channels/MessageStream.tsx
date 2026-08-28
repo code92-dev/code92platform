@@ -1,7 +1,22 @@
 'use client';
 
-import {useCallback, useEffect, useRef, useState, useTransition} from 'react';
-import {Bot, CornerDownRight, Send, Terminal} from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition
+} from 'react';
+import {
+  Bot,
+  CornerDownRight,
+  Paperclip,
+  Send,
+  Terminal,
+  Trash2,
+  X
+} from 'lucide-react';
 import {useTranslations} from 'next-intl';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -9,11 +24,24 @@ import remarkGfm from 'remark-gfm';
 import ProposalCard from '@/components/channels/ProposalCard';
 import RelativeTime from '@/components/RelativeTime';
 import {
+  attachFilesToMessageAction,
+  deleteMessageAction,
   getChannelViewAction,
   markChannelReadAction,
   postMessageAction
 } from '@/lib/actions/channels';
-import {mentionToken, type Message} from '@/lib/channels';
+import MessageAttachmentList from '@/components/channels/MessageAttachmentList';
+import {DOCUMENT_ACCEPT, formatFileSize} from '@/lib/attachments';
+import {
+  removeKnowledgeFile,
+  uploadMessageAttachments
+} from '@/lib/knowledge-upload';
+import {
+  MAX_MESSAGE_ATTACHMENTS,
+  mentionToken,
+  type Message,
+  type MessageAttachment
+} from '@/lib/channels';
 import {mentionHighlight} from '@/lib/mention-highlight';
 import type {AgentProposal} from '@/lib/agents';
 
@@ -26,6 +54,12 @@ import type {AgentProposal} from '@/lib/agents';
 // this loop; until then a short poll is the honest implementation rather than a
 // subscription to a stream with nothing in it.
 const POLL_INTERVAL_MS = 5000;
+
+async function cleanupStoredFiles(
+  stored: Awaited<ReturnType<typeof uploadMessageAttachments>>
+) {
+  await Promise.all(stored.map((file) => removeKnowledgeFile(file.key)));
+}
 
 export type MessageAuthor = {
   user_id: string;
@@ -42,6 +76,7 @@ export default function MessageStream({
   channelId,
   initialMessages,
   initialProposals,
+  initialAttachments,
   authors,
   currentUserId,
   isAdmin
@@ -49,6 +84,7 @@ export default function MessageStream({
   channelId: string;
   initialMessages: Message[];
   initialProposals: AgentProposal[];
+  initialAttachments: MessageAttachment[];
   authors: MessageAuthor[];
   currentUserId: string;
   isAdmin: boolean;
@@ -60,7 +96,13 @@ export default function MessageStream({
   // cannot wipe them.
   const [sending, setSending] = useState<Message[]>([]);
   const [proposals, setProposals] = useState(initialProposals);
+  const [attachments, setAttachments] = useState(initialAttachments);
   const [body, setBody] = useState('');
+  // Files chosen but not yet posted. They are uploaded on send, not on pick, so
+  // abandoning a draft leaves nothing behind in storage to clean up.
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
   // The @token being typed right now: where it starts in the body, and what has
   // been typed after the @. null when the caret is not inside one.
@@ -74,6 +116,16 @@ export default function MessageStream({
   // pending flag any more: the draft message itself is the progress indicator.
   const [, startTransition] = useTransition();
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const attachmentsByMessage = useMemo(() => {
+    const grouped = new Map<string, MessageAttachment[]>();
+    for (const attachment of attachments) {
+      const existing = grouped.get(attachment.source_message_id);
+      if (existing) existing.push(attachment);
+      else grouped.set(attachment.source_message_id, [attachment]);
+    }
+    return grouped;
+  }, [attachments]);
 
   const authorMap = new Map(authors.map((a) => [a.user_id, a]));
 
@@ -91,6 +143,7 @@ export default function MessageStream({
     const view = await getChannelViewAction(channelId);
     setMessages(view.messages);
     setProposals(view.proposals);
+    setAttachments(view.attachments);
   }, [channelId]);
 
   useEffect(() => {
@@ -164,8 +217,28 @@ export default function MessageStream({
     });
   }
 
+  function pickFiles(chosen: FileList | null) {
+    if (!chosen?.length) return;
+    setError(null);
+    setPendingFiles((prev) => {
+      const next = [...prev, ...Array.from(chosen)];
+      if (next.length > MAX_MESSAGE_ATTACHMENTS) {
+        setError(t('errors.tooManyFiles', {count: MAX_MESSAGE_ATTACHMENTS}));
+        return next.slice(0, MAX_MESSAGE_ATTACHMENTS);
+      }
+      return next;
+    });
+    // Cleared so re-picking the same file fires onChange again.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
   function send() {
-    const trimmed = body.trim();
+    const files = pendingFiles;
+    // A message row must have a body — the CHECK requires 1..20000 characters —
+    // so a post that is only files still needs text. The file names are the
+    // honest default: they say what was sent without inventing a sentence.
+    const trimmed =
+      body.trim() || (files.length ? files.map((f) => f.name).join(', ') : '');
     if (!trimmed) {
       setError(t('errors.empty'));
       return;
@@ -194,6 +267,8 @@ export default function MessageStream({
     setSending((prev) => [...prev, draft]);
     setBody('');
     setReplyTo(null);
+    setPendingFiles([]);
+    if (files.length) setUploading(true);
 
     startTransition(async () => {
       const result = await postMessageAction({
@@ -203,17 +278,55 @@ export default function MessageStream({
       });
 
       if (!result.ok) {
-        // Hand the text back rather than losing it to a failed send.
+        // Hand the text and the files back rather than losing them to a failed
+        // send. Nothing was uploaded yet, so there is no storage to undo.
         setSending((prev) => prev.filter((m) => m.id !== draft.id));
         setBody((current) => (current.trim() ? current : trimmed));
         setReplyTo(parentId);
+        setPendingFiles(files);
+        setUploading(false);
         setError(t('errors.generic'));
         return;
       }
 
-      const view = await getChannelViewAction(channelId);
-      setMessages(view.messages);
-      setProposals(view.proposals);
+      // Files go up after the message exists, because each becomes a knowledge
+      // item that has to name the message it arrived on. The message is already
+      // posted at this point, so a failed upload is reported without taking the
+      // message down with it — the text is real and the reader can retry the
+      // file.
+      if (files.length && result.messageId) {
+        // Both halves report the reason they failed, and both reasons are
+        // shown. A generic "could not be attached" hides which half broke —
+        // a storage rejection and a database refusal need different fixes,
+        // and the person who can see the message is the one who can act on it.
+        let stored: Awaited<ReturnType<typeof uploadMessageAttachments>> = [];
+        try {
+          stored = await uploadMessageAttachments(files);
+          const attached = await attachFilesToMessageAction({
+            messageId: result.messageId,
+            files: stored
+          });
+          if (!attached.ok) {
+            await cleanupStoredFiles(stored);
+            console.error('[attach] server action refused:', attached.error);
+            setError(`${t('errors.attachFailed')} ${attached.error}`);
+          }
+        } catch (uploadError) {
+          // A thrown server-action/network failure is just as uncommitted as an
+          // explicit refusal. The uploaded objects have no database owner, so
+          // leaving them behind would leak storage on every interrupted attach.
+          await cleanupStoredFiles(stored);
+          const reason =
+            uploadError instanceof Error
+              ? uploadError.message
+              : String(uploadError);
+          console.error('[attach] upload threw:', uploadError);
+          setError(`${t('errors.attachFailed')} ${reason}`);
+        }
+      }
+      setUploading(false);
+
+      await refresh();
       // Dropped in the same tick the confirmed list arrives, so the message never
       // flickers out of the thread between the two.
       setSending((prev) => prev.filter((m) => m.id !== draft.id));
@@ -224,12 +337,29 @@ export default function MessageStream({
     });
   }
 
+  // Optimistic, and safe to be: the row is only ever soft-deleted, so the worst
+  // a failed call costs is a tombstone that un-hides on the next poll.
+  function remove(messageId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId ? {...m, deleted_at: new Date().toISOString()} : m
+      )
+    );
+    startTransition(async () => {
+      const result = await deleteMessageAction({messageId});
+      if (!result.ok) setError(t('errors.deleteFailed'));
+      await refresh();
+    });
+  }
+
   const allMessages = [...messages, ...sending];
   const topLevel = allMessages.filter((m) => m.parent_id === null);
   const repliesOf = (id: string) =>
     allMessages.filter((m) => m.parent_id === id);
   const proposalsFor = (messageId: string) =>
     proposals.filter((p) => p.message_id === messageId);
+  const attachmentsFor = (messageId: string) =>
+    attachmentsByMessage.get(messageId) ?? [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -246,6 +376,9 @@ export default function MessageStream({
                   message={message}
                   author={authorMap.get(message.author_id ?? '') ?? null}
                   onReply={() => setReplyTo(message.id)}
+                  onDelete={() => remove(message.id)}
+                  canDelete={message.author_id === currentUserId}
+                  attachments={attachmentsFor(message.id)}
                   replyCount={repliesOf(message.id).length}
                   isSending={message.id.startsWith('sending-')}
                   highlight={highlight}
@@ -259,6 +392,9 @@ export default function MessageStream({
                           message={reply}
                           author={authorMap.get(reply.author_id ?? '') ?? null}
                           onReply={() => setReplyTo(message.id)}
+                          onDelete={() => remove(reply.id)}
+                          canDelete={reply.author_id === currentUserId}
+                          attachments={attachmentsFor(reply.id)}
                           replyCount={0}
                           isSending={reply.id.startsWith('sending-')}
                           highlight={highlight}
@@ -358,7 +494,53 @@ export default function MessageStream({
           </ul>
         ) : null}
 
+        {pendingFiles.length > 0 ? (
+          <ul className="mb-2 flex flex-wrap gap-1.5">
+            {pendingFiles.map((file, i) => (
+              <li
+                key={`${file.name}-${i}`}
+                className="inline-flex items-center gap-1.5 rounded border border-hairline bg-raised px-2 py-1 text-xs text-muted"
+              >
+                <Paperclip className="h-3 w-3 shrink-0 text-faint" strokeWidth={1.75} />
+                <span dir="auto" className="max-w-[16rem] truncate">
+                  {file.name}
+                </span>
+                <span className="font-mono text-[10px] text-faint">
+                  {formatFileSize(file.size)}
+                </span>
+                <button
+                  type="button"
+                  aria-label={t('composer.removeFile')}
+                  onClick={() =>
+                    setPendingFiles((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  className="text-faint transition-colors hover:text-danger"
+                >
+                  <X className="h-3 w-3" strokeWidth={2} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
         <div className="flex items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={DOCUMENT_ACCEPT}
+            className="sr-only"
+            onChange={(e) => pickFiles(e.target.files)}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title={t('composer.attachHint')}
+            aria-label={t('composer.attach')}
+            className="inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded border border-hairline bg-bg text-faint transition-colors hover:border-accent/40 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <Paperclip className="h-4 w-4" strokeWidth={1.75} />
+          </button>
           <textarea
             ref={composerRef}
             value={body}
@@ -416,12 +598,14 @@ export default function MessageStream({
             className="inline-flex h-[44px] items-center gap-1.5 rounded bg-accent px-4 text-sm font-semibold text-bg transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <Send className="h-3.5 w-3.5 rtl:rotate-180" strokeWidth={2} />
-            {t('composer.send')}
+            {uploading ? t('composer.uploading') : t('composer.send')}
           </button>
         </div>
 
         {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
-        <p className="mt-2 text-xs text-faint">{t('composer.mentionHint')}</p>
+        <p className="mt-2 text-xs text-faint">
+          {t('composer.mentionHint')} {t('composer.attachHint')}
+        </p>
       </div>
     </div>
   );
@@ -431,6 +615,9 @@ function MessageRow({
   message,
   author,
   onReply,
+  onDelete,
+  canDelete,
+  attachments,
   replyCount,
   isSending = false,
   highlight
@@ -438,6 +625,9 @@ function MessageRow({
   message: Message;
   author: MessageAuthor | null;
   onReply: () => void;
+  onDelete: () => void;
+  canDelete: boolean;
+  attachments: MessageAttachment[];
   replyCount: number;
   isSending?: boolean;
   highlight: ReturnType<typeof mentionHighlight>;
@@ -544,14 +734,35 @@ function MessageRow({
           </p>
         ) : null}
 
+        {attachments.length > 0 ? (
+          <MessageAttachmentList attachments={attachments} />
+        ) : null}
+
         {!isSystem && !isSending ? (
-          <button
-            type="button"
-            onClick={onReply}
-            className="mt-1.5 font-mono text-[10px] uppercase tracking-widest text-faint transition-colors hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            {replyCount > 0 ? t('message.replies', {count: replyCount}) : t('message.reply')}
-          </button>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onReply}
+              className="font-mono text-[10px] uppercase tracking-widest text-faint transition-colors hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              {replyCount > 0 ? t('message.replies', {count: replyCount}) : t('message.reply')}
+            </button>
+            {/* Only the author's own messages. RLS says the same thing, so this
+                is about not offering an action that would be refused — an agent
+                reply and someone else's message have no delete control at all. */}
+            {canDelete ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(t('message.confirmDelete'))) onDelete();
+                }}
+                className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-faint transition-colors hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-danger"
+              >
+                <Trash2 className="h-3 w-3" strokeWidth={1.75} />
+                {t('message.delete')}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </article>

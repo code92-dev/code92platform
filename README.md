@@ -115,7 +115,7 @@ Agents answer on one of two runtimes, chosen per agent in Settings.
 | | `direct_openrouter` (default) | `jcode` |
 |---|---|---|
 | Where | `functions/thread-agent.ts`, one completion | a container running the [jcode](https://jcode.sh) harness |
-| Gets | the conversation, the product, its knowledge base | all of that plus a workspace, a terminal and minutes of wall clock |
+| Gets | the conversation, the product, its knowledge base | all of that plus a workspace, structured file tools and minutes of wall clock |
 | Costs | fractions of a cent | dollars |
 | Can write | nothing | nothing |
 

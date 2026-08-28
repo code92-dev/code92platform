@@ -36,7 +36,7 @@
     "handleLocked": "The handle cannot change — messages already address this agent by it.",
     "runtime": "Runtime",
     "runtimeHint": "Where this agent runs. Most agents should stay on the OpenRouter path — it answers in one call and costs a fraction of a harness run.",
-    "runtimeWarning": "Harness agents run in an isolated container with a real workspace and a terminal. They still cannot change anything: a run ends as a message and proposals that someone has to approve. Only promote an agent to the harness once the runner is healthy, and start with a low budget.",
+    "runtimeWarning": "Harness agents run in an isolated container with a real workspace and structured file tools. They still cannot change anything directly: a run ends as a message and proposals that someone has to approve. Only promote an agent to the harness once the runner is healthy, and start with a low budget.",
     "toolProfile": "Tools",
     "toolProfileHint": "Operator is the only profile with a workspace. The other two read the platform and nothing else.",
     "maxToolSteps": "Tool step limit",
@@ -71,7 +71,9 @@
     "patchFiles": "{count, plural, one {# file} other {# files}}",
     "committed": "Committed as {sha}.",
     "commitPending": "Approved, but not committed yet.",
-    "commitFailedWith": "Approved, but the commit failed: {reason}"
+    "commitFailedWith": "Approved, but the commit failed: {reason}",
+    "retryCommit": "Retry commit",
+    "retryingCommit": "Retrying…"
   },
   "openrouter": {
     "title": "OpenRouter",

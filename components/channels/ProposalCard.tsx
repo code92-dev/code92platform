@@ -5,7 +5,10 @@ import {Check, ChevronDown, ChevronRight, Sparkles, X} from 'lucide-react';
 import {useTranslations} from 'next-intl';
 
 import RelativeTime from '@/components/RelativeTime';
-import {decideProposalAction} from '@/lib/actions/agents';
+import {
+  decideProposalAction,
+  retryApprovedPatchAction
+} from '@/lib/actions/agents';
 import {
   ADMIN_ONLY_ACTIONS,
   DEFERRED_ACTIONS,
@@ -63,6 +66,14 @@ export default function ProposalCard({
         note: note.trim() || undefined,
         waiverReason: waiver.trim() || undefined
       });
+      if (!result.ok) setError(result.error);
+    });
+  }
+
+  function retryCommit() {
+    setError(null);
+    startTransition(async () => {
+      const result = await retryApprovedPatchAction({proposalId: proposal.id});
       if (!result.ok) setError(result.error);
     });
   }
@@ -154,11 +165,23 @@ export default function ProposalCard({
             {t('proposal.committed', {sha: proposal.commit_sha.slice(0, 7)})}
           </p>
         ) : (
-          <p dir="auto" className="mt-3 text-sm text-danger">
-            {proposal.commit_error
-              ? t('proposal.commitFailedWith', {reason: proposal.commit_error})
-              : t('proposal.commitPending')}
-          </p>
+          <div>
+            <p dir="auto" className="mt-3 text-sm text-danger">
+              {proposal.commit_error
+                ? t('proposal.commitFailedWith', {reason: proposal.commit_error})
+                : t('proposal.commitPending')}
+            </p>
+            {proposal.commit_error ? (
+              <button
+                type="button"
+                onClick={retryCommit}
+                disabled={pending}
+                className="mt-2 rounded border border-hairline bg-raised px-3 py-1.5 text-sm text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-40"
+              >
+                {pending ? t('proposal.retryingCommit') : t('proposal.retryCommit')}
+              </button>
+            ) : null}
+          </div>
         )
       ) : null}
 

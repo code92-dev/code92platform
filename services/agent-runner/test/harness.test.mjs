@@ -23,8 +23,8 @@ test('the operator toolset never includes a tool that is also denied', () => {
 
 test('only the operator profile gets tools that can change or execute things', () => {
   const operator = toolsFor('operator');
-  assert.ok(operator.includes('bash'));
   assert.ok(operator.includes('write'));
+  assert.ok(!operator.includes('bash'), 'the operator must not receive a shell');
 
   for (const profile of ['chat', 'research', undefined]) {
     const tools = toolsFor(profile);
@@ -358,8 +358,9 @@ test('every local module the runner imports is copied into the image', async () 
 });
 
 // The SDK spawns the bridge with {...process.env, ...options.env} and takes no
-// uid, so jcode runs as this user with this environment. An operator agent has
-// bash. Without scrubbing, `env` prints the runner's own credential.
+// uid, so jcode runs as this user with this environment. The runner therefore
+// scrubs sensitive names as defence in depth even though the operator has no
+// shell or network tool.
 test('the runner secret never reaches the harness environment', () => {
   const scrubbed = scrubbedHostEnv({
     AGENT_RUNNER_SECRET: 'super-secret',

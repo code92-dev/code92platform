@@ -7,6 +7,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
+import {createConnection} from 'node:net';
 import {mkdtemp, readFile, stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -14,7 +15,14 @@ import {join} from 'node:path';
 import {__test__, scrubbedHostEnv} from '../jcode-driver.mjs';
 import {pathsFor, socketPathBudget} from '../server.mjs';
 
-const {OPERATOR_TOOLS, DENIED_TOOLS, toolsFor, createCollector, writeMcpConfig} = __test__;
+const {
+  OPERATOR_TOOLS,
+  DENIED_TOOLS,
+  toolsFor,
+  createCollector,
+  writeMcpConfig,
+  createCapabilityBroker,
+} = __test__;
 
 test('the operator toolset never includes a tool that is also denied', () => {
   const overlap = OPERATOR_TOOLS.filter((tool) => DENIED_TOOLS.includes(tool));
@@ -65,23 +73,24 @@ test('background progress becomes one job per task, ending in a terminal state',
   assert.equal(jobs.find((job) => job.id === 'b').state, 'running');
 });
 
-test('the MCP config carries the run capability and is not world-readable', async () => {
+test('the MCP config carries no bearer token and is not world-readable', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'c92-ws-'));
   const path = await writeMcpConfig(workspace, {
     runtimeUrl: 'https://example.invalid/functions/agent-runtime',
     runId: '11111111-1111-1111-1111-111111111111',
-    capabilityToken: 'capability-token-value',
+    capabilitySocket: '/var/lib/code92-agent-runner/h/abc123/run/capability.sock',
     moduleDir: '/srv/agent-runner',
   });
 
   const config = JSON.parse(await readFile(path, 'utf8'));
   const server = config.mcpServers.code92_platform;
-  assert.equal(server.env.JCODE_RUN_CAPABILITY_TOKEN, 'capability-token-value');
+  assert.equal(server.env.JCODE_RUN_CAPABILITY_SOCKET, '/var/lib/code92-agent-runner/h/abc123/run/capability.sock');
+  assert.ok(!('JCODE_RUN_CAPABILITY_TOKEN' in server.env));
   assert.equal(server.env.JCODE_RUN_ID, '11111111-1111-1111-1111-111111111111');
   assert.equal(server.shared, false, 'a run-scoped token must not be shared between sessions');
   assert.deepEqual(server.command, ['node', '/srv/agent-runner/platform-mcp.mjs']);
 
-  // The token is a live bearer for the length of the lease.
+  // The config is model-readable, so only the non-secret socket path is stored.
   const mode = (await stat(path)).mode & 0o777;
   assert.equal(mode, 0o600);
 
@@ -89,6 +98,22 @@ test('the MCP config carries the run capability and is not world-readable', asyn
   const raw = await readFile(path, 'utf8');
   assert.ok(!raw.includes('AGENT_RUNNER_SECRET'));
   assert.ok(!raw.includes('OPENROUTER_API_KEY'));
+  assert.ok(!raw.includes('capability-token-value'));
+});
+
+test('the capability broker delivers the token over a private socket', async () => {
+  const jcodeHome = await mkdtemp(join(tmpdir(), 'c92-home-'));
+  const broker = await createCapabilityBroker(jcodeHome, 'capability-token-value');
+  const token = await new Promise((resolve, reject) => {
+    const socket = createConnection(broker.socketPath);
+    let raw = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => (raw += chunk));
+    socket.on('end', () => resolve(raw.trim()));
+    socket.on('error', reject);
+  });
+  await broker.close();
+  assert.equal(token, 'capability-token-value');
 });
 
 // --- the claim → progress → finalize protocol --------------------------------

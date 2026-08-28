@@ -134,6 +134,21 @@ test('autonomous execution cannot trust model-selected product or task identifie
   assert.match(migration, /prop\.product_id IS NULL[\s\S]*requires a product-bound channel/);
 });
 
+test('knowledge notes remain proposal-only after the autonomous-action hardening', async () => {
+  const migration = await read(
+    'migrations/20260828170000_require-approval-for-knowledge-notes.sql'
+  );
+  const runtime = await read('functions/agent-runtime.ts');
+  const agents = await read('lib/agents.ts');
+
+  assert.match(migration, /array_remove\(autonomous_actions, 'knowledge_note'\)/);
+  assert.match(migration, /agents_autonomous_actions_check/);
+  assert.match(migration, /'task_create', 'task_update', 'status_update'/);
+  assert.match(runtime, /const AUTONOMOUS_ACTIONS = \[[\s\S]*'task_create',[\s\S]*'status_update'/);
+  assert.doesNotMatch(runtime.match(/const AUTONOMOUS_ACTIONS = \[[\s\S]*?\];/)?.[0] ?? '', /knowledge_note/);
+  assert.doesNotMatch(agents.match(/export const AUTONOMOUS_ACTIONS = \[[\s\S]*?\] as const/)?.[0] ?? '', /knowledge_note/);
+});
+
 test('the operator harness has no shell and final replies redact model credentials', async () => {
   const driver = await read('services/agent-runner/jcode-driver.mjs');
   const runtime = await read('functions/agent-runtime.ts');

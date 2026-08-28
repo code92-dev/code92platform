@@ -46,11 +46,11 @@ const PROPOSAL_ACTIONS = [
 
 // Actions that may run without a human approving them, when the operator has
 // put them in an agent's autonomous_actions. Strictly narrower than the list
-// above: lifecycle_advance can require a waiver, which is a person accepting
-// responsibility, and repo_patch commits under the org PAT. Mirrors the CHECK
-// in migrations/20260827110000_add-autonomous-agent-actions.sql.
+// above: knowledge_note remains proposal-only because its content may be
+// proprietary; lifecycle_advance can require a waiver, which is a person
+// accepting responsibility; and repo_patch commits under the org PAT. Mirrors
+// the forward-only CHECK in migrations/20260828170000_require-approval-for-knowledge-notes.sql.
 const AUTONOMOUS_ACTIONS = [
-  'knowledge_note',
   'task_create',
   'task_update',
   'status_update',

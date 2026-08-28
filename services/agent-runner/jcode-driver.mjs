@@ -25,7 +25,8 @@
 //      credential is scrubbed as defence in depth while structured file tools
 //      remain the only workspace capability; see scrubbedHostEnv().
 import {JcodeClient} from '@1jehuang/jcode-sdk';
-import {chown, mkdir, readdir, writeFile} from 'node:fs/promises';
+import {chown, chmod, mkdir, readdir, unlink, writeFile} from 'node:fs/promises';
+import {createServer as createNetServer} from 'node:net';
 import {join} from 'node:path';
 
 // The operator toolset. An explicit allow-list rather than a profile name:
@@ -51,10 +52,11 @@ function toolsFor(profile) {
   return profile === 'operator' ? OPERATOR_TOOLS : ['read', 'grep', 'glob', 'ls'];
 }
 
-// Written into the workspace, not the instance home: jcode reads
-// `.jcode/mcp.json` from the project root, and scoping it to the workspace
-// means the capability token dies with the directory it was written for.
-async function writeMcpConfig(workspace, {runtimeUrl, runId, capabilityToken, moduleDir}) {
+// jcode reads `.jcode/mcp.json` from the project root. The config therefore
+// lives in the workspace, but it must not contain the bearer token: the model
+// can read every regular file there. The MCP child receives a socket path and
+// obtains the token over a runner-owned Unix socket instead.
+async function writeMcpConfig(workspace, {runtimeUrl, runId, capabilitySocket, moduleDir}) {
   const dir = join(workspace, '.jcode');
   await mkdir(dir, {recursive: true});
   const config = {
@@ -68,7 +70,7 @@ async function writeMcpConfig(workspace, {runtimeUrl, runId, capabilityToken, mo
         shared: false,
         env: {
           JCODE_RUNTIME_URL: runtimeUrl,
-          JCODE_RUN_CAPABILITY_TOKEN: capabilityToken,
+          JCODE_RUN_CAPABILITY_SOCKET: capabilitySocket,
           JCODE_RUN_ID: runId,
         },
       },
@@ -76,6 +78,25 @@ async function writeMcpConfig(workspace, {runtimeUrl, runId, capabilityToken, mo
   };
   await writeFile(join(dir, 'mcp.json'), JSON.stringify(config, null, 2), {mode: 0o600});
   return join(dir, 'mcp.json');
+}
+
+async function createCapabilityBroker(jcodeHome, capabilityToken) {
+  const runDir = join(jcodeHome, 'run');
+  await mkdir(runDir, {recursive: true, mode: 0o700});
+  const socketPath = join(runDir, 'capability.sock');
+  await unlink(socketPath).catch(() => {});
+  const server = createNetServer((socket) => {
+    socket.end(`${capabilityToken}\n`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
+  await chmod(socketPath, 0o600);
+  return {socketPath, close: () => new Promise((resolve) => server.close(() => resolve()))};
 }
 
 async function handOver(paths, uid, gid) {
@@ -214,17 +235,27 @@ export function scrubbedHostEnv(source = process.env) {
 
 export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runtimeUrl, agentUid, agentGid, repoInfo, onProgress}) {
   const allowedTools = toolsFor(claim.tool_profile);
+  await mkdir(jcodeHome, {recursive: true, mode: 0o700});
+  const capabilityBroker = await createCapabilityBroker(jcodeHome, claim.capability_token);
   const mcpPath = await writeMcpConfig(workspace, {
     runtimeUrl,
     runId: claim.run_id,
-    capabilityToken: claim.capability_token,
+    capabilitySocket: capabilityBroker.socketPath,
     moduleDir,
   });
-  await mkdir(jcodeHome, {recursive: true});
-  await handOver([workspace, join(workspace, '.jcode'), mcpPath, jcodeHome], agentUid, agentGid);
+  await handOver([
+    workspace,
+    join(workspace, '.jcode'),
+    mcpPath,
+    jcodeHome,
+    join(jcodeHome, 'run'),
+    capabilityBroker.socketPath,
+  ], agentUid, agentGid);
   if (repoInfo?.path) await handOverTree(repoInfo.path, agentUid, agentGid);
 
-  const client = await JcodeClient.launch({
+  let client;
+  try {
+    client = await JcodeClient.launch({
     // Stable per agent, so a follow-up mention in the same thread resumes a
     // session rather than paying to rebuild context from nothing.
     jcodeHome,
@@ -261,7 +292,12 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
     // is otherwise piped into a buffer that is only read on a startup failure.
     // Noisy by design: a crash we cannot explain costs more than the noise.
     inheritStderr: true,
-  });
+    });
+  } catch (error) {
+    await capabilityBroker.close().catch(() => {});
+    await unlink(capabilityBroker.socketPath).catch(() => {});
+    throw error;
+  }
 
   const collector = createCollector();
   let sessionId = null;
@@ -381,6 +417,8 @@ export async function runJcodeTurn({claim, workspace, jcodeHome, moduleDir, runt
     // Stops the private instance and removes an ephemeral home. A stable home
     // is kept, which is the point of resumable sessions.
     await client.close().catch(() => {});
+    await capabilityBroker.close().catch(() => {});
+    await unlink(capabilityBroker.socketPath).catch(() => {});
   }
 }
 
@@ -390,5 +428,6 @@ export const __test__ = {
   toolsFor,
   createCollector,
   writeMcpConfig,
+  createCapabilityBroker,
   workspaceBriefing,
 };

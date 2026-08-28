@@ -19,7 +19,9 @@ export type ProposalAction = (typeof PROPOSAL_ACTIONS)[number];
 
 // Actions an agent may be trusted to perform without a human approving them.
 //
-// A strict subset of PROPOSAL_ACTIONS, and the two omissions are the point.
+// A strict subset of PROPOSAL_ACTIONS. Knowledge notes remain proposal-only
+// because their model-authored content needs a human confidentiality review.
+// The other omissions are the point too:
 // lifecycle_advance can require a waiver, and a waiver is a person accepting
 // responsibility — there is nobody to accept it when nobody is asked.
 // repo_patch commits to a repository under the org PAT. Both stay
@@ -28,7 +30,6 @@ export type ProposalAction = (typeof PROPOSAL_ACTIONS)[number];
 //
 // Mirrors migrations/20260827110000_add-autonomous-agent-actions.sql.
 export const AUTONOMOUS_ACTIONS = [
-  'knowledge_note',
   'task_create',
   'task_update',
   'status_update'

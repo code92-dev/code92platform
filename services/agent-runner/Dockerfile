@@ -35,6 +35,10 @@ ENV NODE_ENV=production \
     AGENT_GID=10001 \
     MAX_CONCURRENT_RUNS=1
 
+# Keep the bridge and MCP child away from root even when this image is run
+# directly rather than through the compose file (which sets the same user).
+USER agent
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

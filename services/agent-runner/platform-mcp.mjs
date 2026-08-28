@@ -16,10 +16,33 @@
 // needed here is four tools over JSON Lines, and a dependency inside the
 // sandbox is a dependency the agent could reach.
 import readline from 'node:readline';
+import net from 'node:net';
 
 const runtimeUrl = process.env.JCODE_RUNTIME_URL;
-const capability = process.env.JCODE_RUN_CAPABILITY_TOKEN;
+const capabilitySocket = process.env.JCODE_RUN_CAPABILITY_SOCKET;
 const runId = process.env.JCODE_RUN_ID;
+
+async function readCapability(socketPath) {
+  if (!socketPath) return process.env.JCODE_RUN_CAPABILITY_TOKEN;
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let raw = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => {
+      raw += chunk;
+      const newline = raw.indexOf('\n');
+      if (newline >= 0) {
+        socket.destroy();
+        resolve(raw.slice(0, newline));
+      }
+    });
+    socket.on('error', reject);
+  });
+}
+
+// The token is delivered over a runner-owned Unix socket rather than through
+// `.jcode/mcp.json`, which is readable by the model's structured file tools.
+const capability = await readCapability(capabilitySocket);
 
 const tools = [
   {
